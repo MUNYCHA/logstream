@@ -1,0 +1,25 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: logstream
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:172.27.12.202:9092}
+
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP_ID:log-dashboard}
+      auto-offset-reset: latest
+
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+
+      properties:
+        spring.json.trusted.packages: org.munycha.logstream.model
+        spring.json.use.type.headers: false
+        spring.json.value.default.type: org.munycha.logstream.model.LogEvent
+
+logstream:
+  topics: ${LOGSTREAM_TOPICS:server-topic,system-topic,app1-topic,app2-topic,app3-topic,app4-topic}
+  allowed-origins: ${LOGSTREAM_ALLOWED_ORIGINS:http://localhost:5173}
