@@ -67,7 +67,8 @@ All config is externalized via environment variables with sensible dev defaults.
 
 | Env Var | Default | Description |
 |---|---|---|
-| `SERVER_PORT` | `8080` | HTTP server port |
+| `HOST_PORT` | `8080` | Host port exposed by Docker (Docker only) |
+| `SERVER_PORT` | `8080` | Spring Boot internal port (jar/spring boot run) |
 | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka broker address |
 | `KAFKA_CONSUMER_GROUP_ID` | `log-dashboard` | Kafka consumer group |
 | `LOGSTREAM_TOPICS` | `server-topic,system-topic,...` | Comma-separated topics to subscribe |
@@ -118,6 +119,7 @@ cp .env.example .env
 ```
 Then edit `.env` with your actual values:
 ```env
+HOST_PORT=8080
 KAFKA_BOOTSTRAP_SERVERS=172.27.12.202:9092
 LOGSTREAM_TOPICS=server-topic,system-topic,app1-topic,app2-topic,app3-topic,app4-topic
 LOGSTREAM_ALLOWED_ORIGINS=https://myapp.com
