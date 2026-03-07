@@ -102,6 +102,46 @@ java -jar target/logstream-0.0.1-SNAPSHOT.jar --spring.profiles.active=prod
 
 The `prod` profile (`application-prod.yaml`) requires all env vars to be explicitly set — the app will refuse to start if any are missing.
 
+## Running with Docker
+
+**Prerequisites:** Docker installed on the server — no Java required.
+
+**1. Clone the repo**
+```bash
+git clone git@github.com:MUNYCHA/logstream.git
+cd logstream
+```
+
+**2. Create your `.env` file from the example**
+```bash
+cp .env.example .env
+```
+Then edit `.env` with your actual values:
+```env
+KAFKA_BOOTSTRAP_SERVERS=172.27.12.202:9092
+LOGSTREAM_TOPICS=server-topic,system-topic,app1-topic,app2-topic,app3-topic,app4-topic
+LOGSTREAM_ALLOWED_ORIGINS=https://myapp.com
+```
+
+**3. Run**
+```bash
+docker-compose up -d
+```
+
+App is now running on port `8080`.
+
+**Useful commands:**
+```bash
+# view live logs
+docker-compose logs -f
+
+# stop
+docker-compose down
+
+# pull latest code and restart
+git pull && docker-compose up -d --build
+```
+
 ## Branches
 
 | Branch | Purpose |
