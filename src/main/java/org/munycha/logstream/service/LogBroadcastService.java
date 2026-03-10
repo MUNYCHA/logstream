@@ -7,12 +7,15 @@ import org.munycha.logstream.model.LogEvent;
 import org.munycha.logstream.websocket.WebSocketSessionRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.scheduling.annotation.Async;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
@@ -23,9 +26,15 @@ public class LogBroadcastService {
     /** Max queued messages per session before dropping — prevents slow-client backpressure. */
     private static final int MAX_PENDING_PER_SESSION = 500;
 
+    /** Max events to batch into a single WebSocket message. */
+    private static final int MAX_BATCH_SIZE = 100;
+
     private final WebSocketSessionRegistry sessionRegistry;
     private final ObjectMapper objectMapper;
     private final LogFilterEngine filterEngine;
+
+    /** Incoming events queue — drained every flush interval. */
+    private final ConcurrentLinkedQueue<LogEvent> incomingQueue = new ConcurrentLinkedQueue<>();
 
     /** Tracks in-flight send count per session to detect slow clients. */
     private final ConcurrentHashMap<String, AtomicInteger> sendQueue = new ConcurrentHashMap<>();
@@ -39,50 +48,76 @@ public class LogBroadcastService {
         sessionRegistry.onRemove(this::onSessionRemoved);
     }
 
-    @Async
+    /**
+     * Called from Kafka consumer — enqueues the event for batched broadcast.
+     * Non-blocking so it never stalls the Kafka consumer thread.
+     */
     public void broadcast(LogEvent event) {
+        incomingQueue.add(event);
+    }
+
+    /**
+     * Flushes queued events every 100ms, batching per-session filtered events
+     * into a single WebSocket message (JSON array) to reduce frame overhead.
+     */
+    @Scheduled(fixedDelay = 100)
+    public void flush() {
+        // Drain all queued events
+        List<LogEvent> batch = new ArrayList<>(MAX_BATCH_SIZE * 2);
+        LogEvent event;
+        while ((event = incomingQueue.poll()) != null) {
+            batch.add(event);
+        }
+        if (batch.isEmpty()) return;
+
         try {
-            // Serialize once, reuse for all matching sessions
-            final TextMessage[] holder = { null };
-
             sessionRegistry.forEach(session -> {
-                // Skip sessions that have subscriptions but aren't subscribed to this topic
-                if (sessionRegistry.hasSubscriptions(session) && !sessionRegistry.isSubscribed(session, event.topic())) {
-                    return;
+                List<LogEvent> matched = new ArrayList<>();
+
+                for (LogEvent evt : batch) {
+                    // Skip events not matching session's topic subscription
+                    if (sessionRegistry.hasSubscriptions(session) && !sessionRegistry.isSubscribed(session, evt.topic())) {
+                        continue;
+                    }
+
+                    // Apply per-session filter
+                    ClientFilter filter = sessionRegistry.getFilter(session);
+                    if (!filterEngine.matches(evt, filter)) {
+                        continue;
+                    }
+
+                    matched.add(evt);
                 }
 
-                // Apply per-session filter
-                ClientFilter filter = sessionRegistry.getFilter(session);
-                if (!filterEngine.matches(event, filter)) {
-                    return;
-                }
+                if (matched.isEmpty()) return;
 
-                // Backpressure check — atomic increment-if-under-limit
+                // Backpressure check
                 AtomicInteger pending = sendQueue.computeIfAbsent(session.getId(), k -> new AtomicInteger(0));
                 int current;
                 do {
                     current = pending.get();
                     if (current >= MAX_PENDING_PER_SESSION) {
-                        log.debug("Dropping message for slow session {} (pending: {})", session.getId(), current);
+                        log.debug("Dropping batch for slow session {} (pending: {})", session.getId(), current);
                         return;
                     }
                 } while (!pending.compareAndSet(current, current + 1));
 
-                // Lazy serialize — only if at least one session passes filters
-                if (holder[0] == null) {
-                    try {
-                        holder[0] = new TextMessage(objectMapper.writeValueAsString(event));
-                    } catch (Exception e) {
-                        log.error("Failed to serialize log event: {}", event, e);
-                        pending.decrementAndGet(); // roll back the increment
-                        return;
+                try {
+                    // Send as JSON array if multiple events, single object if one
+                    String json;
+                    if (matched.size() == 1) {
+                        json = objectMapper.writeValueAsString(matched.get(0));
+                    } else {
+                        json = objectMapper.writeValueAsString(matched);
                     }
+                    trySend(session, new TextMessage(json), pending);
+                } catch (Exception e) {
+                    log.error("Failed to serialize batch for session {}: {}", session.getId(), e.getMessage());
+                    pending.decrementAndGet();
                 }
-
-                trySend(session, holder[0], pending);
             });
         } catch (Exception e) {
-            log.error("Failed to broadcast log event: {}", event, e);
+            log.error("Failed to flush broadcast batch: {}", e.getMessage(), e);
         }
     }
 

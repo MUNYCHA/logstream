@@ -5,12 +5,12 @@ A real-time log streaming bridge between **Kafka** and **WebSocket** clients, bu
 ## How It Works
 
 ```
-Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService  →  WebSocket Clients
+Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched)  →  WebSocket Clients
 ```
 
-1. Kafka consumer subscribes to configured topics
-2. Each log event is evaluated against per-session **topic subscriptions** and **filters** (server, path, text search, regex, keywords, time range)
-3. Only matching events are broadcast asynchronously to the relevant WebSocket clients
+1. Kafka consumer subscribes to configured topics and enqueues events
+2. Every ~100ms, the broadcast service flushes the queue — each event is evaluated against per-session **topic subscriptions** and **filters** (server, path, text search, regex, keywords, time range)
+3. Only matching events are sent as a **batched JSON array** (or single object) per session per flush
 4. On connection, the client receives the list of available topics, then live log events that pass its filters
 
 ## WebSocket API
@@ -22,7 +22,7 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService  →  WebSocket Cl
 ["server-topic", "system-topic", "app1-topic"]
 ```
 
-**Message 2..N — live log events (filtered per session):**
+**Message 2..N — live log events (filtered per session, single or batched):**
 ```json
 {
   "serverName": "web-01",
@@ -31,6 +31,14 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService  →  WebSocket Cl
   "timestamp": "2026-03-07T10:00:00",
   "message": "Started application in 1.2 seconds"
 }
+```
+
+**Batched (multiple events in one frame, sent every ~100ms):**
+```json
+[
+  { "serverName": "web-01", "path": "/var/log/app.log", "topic": "app1-topic", "timestamp": "...", "message": "..." },
+  { "serverName": "web-02", "path": "/var/log/app.log", "topic": "app1-topic", "timestamp": "...", "message": "..." }
+]
 ```
 
 **Client → Server — subscribe to topics:**
@@ -80,7 +88,7 @@ The `regexError` field is only present when `regex` is `true` and the pattern is
 src/main/java/org/munycha/logstream/
 ├── LogstreamApplication.java
 ├── config/
-│   ├── AsyncConfig.java           # Bounded ThreadPoolTaskExecutor for @Async broadcast
+│   ├── AsyncConfig.java           # @EnableAsync + @EnableScheduling, bounded ThreadPoolTaskExecutor
 │   ├── LogstreamProperties.java   # @ConfigurationProperties binding
 │   └── WebSocketConfig.java       # WebSocket endpoint + CORS + container limits
 ├── filter/
@@ -91,7 +99,7 @@ src/main/java/org/munycha/logstream/
 │   ├── ClientFilter.java          # Immutable per-session filter criteria record
 │   └── LogEvent.java              # Record: serverName, path, topic, timestamp, message
 ├── service/
-│   └── LogBroadcastService.java   # Async broadcast with per-session backpressure (500 pending max)
+│   └── LogBroadcastService.java   # Batched broadcast (100ms flush) with per-session backpressure (500 pending max)
 └── websocket/
     ├── LogWebSocketHandler.java      # Connection lifecycle + subscribe/filter/clear-filters + throttle
     └── WebSocketSessionRegistry.java # Tracks sessions, subscriptions, and per-session filters
@@ -105,7 +113,7 @@ All config is externalized via environment variables with sensible dev defaults.
 |---|---|---|
 | `HOST_PORT` | `8080` | Host port exposed by Docker (Docker only) |
 | `SERVER_PORT` | `8080` | Spring Boot internal port (jar/spring boot run) |
-| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka broker address |
+| `KAFKA_BOOTSTRAP_SERVERS` | `172.27.12.202:9092` | Kafka broker address |
 | `KAFKA_CONSUMER_GROUP_ID` | `log-dashboard` | Kafka consumer group |
 | `KAFKA_MAX_POLL_RECORDS` | `500` | Max Kafka records per batch poll |
 | `LOGSTREAM_TOPICS` | `server-topic,system-topic,...` | Comma-separated topics to subscribe |
