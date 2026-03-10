@@ -80,19 +80,20 @@ The `regexError` field is only present when `regex` is `true` and the pattern is
 src/main/java/org/munycha/logstream/
 ├── LogstreamApplication.java
 ├── config/
+│   ├── AsyncConfig.java           # Bounded ThreadPoolTaskExecutor for @Async broadcast
 │   ├── LogstreamProperties.java   # @ConfigurationProperties binding
-│   └── WebSocketConfig.java       # WebSocket endpoint + CORS config
+│   └── WebSocketConfig.java       # WebSocket endpoint + CORS + container limits
 ├── filter/
 │   └── LogFilterEngine.java       # Stateless filter engine — evaluates LogEvent vs ClientFilter
 ├── kafka/
-│   └── KafkaLogConsumer.java      # Kafka listener
+│   └── KafkaLogConsumer.java      # Batch Kafka listener (up to 500 records/poll)
 ├── model/
 │   ├── ClientFilter.java          # Immutable per-session filter criteria record
 │   └── LogEvent.java              # Record: serverName, path, topic, timestamp, message
 ├── service/
-│   └── LogBroadcastService.java   # Async broadcast — applies topic + filter checks per session
+│   └── LogBroadcastService.java   # Async broadcast with per-session backpressure (500 pending max)
 └── websocket/
-    ├── LogWebSocketHandler.java      # Connection lifecycle + subscribe/filter/clear-filters actions
+    ├── LogWebSocketHandler.java      # Connection lifecycle + subscribe/filter/clear-filters + throttle
     └── WebSocketSessionRegistry.java # Tracks sessions, subscriptions, and per-session filters
 ```
 
@@ -106,8 +107,10 @@ All config is externalized via environment variables with sensible dev defaults.
 | `SERVER_PORT` | `8080` | Spring Boot internal port (jar/spring boot run) |
 | `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka broker address |
 | `KAFKA_CONSUMER_GROUP_ID` | `log-dashboard` | Kafka consumer group |
+| `KAFKA_MAX_POLL_RECORDS` | `500` | Max Kafka records per batch poll |
 | `LOGSTREAM_TOPICS` | `server-topic,system-topic,...` | Comma-separated topics to subscribe |
 | `LOGSTREAM_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed WebSocket origin |
+| `JVM_MAX_HEAP` | `512m` | JVM max heap size (Docker only) |
 
 ## Running Locally
 
@@ -156,8 +159,11 @@ Then edit `.env` with your actual values:
 ```env
 HOST_PORT=8080
 KAFKA_BOOTSTRAP_SERVERS=172.27.12.202:9092
+KAFKA_CONSUMER_GROUP_ID=log-dashboard
+KAFKA_MAX_POLL_RECORDS=500
 LOGSTREAM_TOPICS=server-topic,system-topic,app1-topic,app2-topic,app3-topic,app4-topic
 LOGSTREAM_ALLOWED_ORIGINS=https://myapp.com
+JVM_MAX_HEAP=512m
 ```
 
 **3. Run**

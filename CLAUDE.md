@@ -38,13 +38,14 @@ docker-compose up -d    # requires .env file (see .env.example)
 
 All source is under `org.munycha.logstream`:
 
-- **`config/WebSocketConfig`** — Registers handler at `/ws/logs`, configures CORS from `logstream.allowed-origins`
+- **`config/AsyncConfig`** — Bounded `ThreadPoolTaskExecutor` (4-8 threads, 10k queue) for `@Async` broadcast. Replaces default unbounded `SimpleAsyncTaskExecutor`. Drops oldest queued task under extreme load
+- **`config/WebSocketConfig`** — Registers handler at `/ws/logs`, configures CORS, sets WebSocket container limits (512KB message buffer, 5s send timeout, 5min idle timeout)
 - **`config/LogstreamProperties`** — `@ConfigurationProperties(prefix="logstream")` binding topics and allowed-origins
-- **`kafka/KafkaLogConsumer`** — `@KafkaListener` consuming from configured topics, delegates to broadcast service
-- **`service/LogBroadcastService`** — `@Async` service that sends LogEvent JSON to matching WebSocket sessions (applies per-session topic subscription + filter checks before sending)
-- **`filter/LogFilterEngine`** — Stateless `@Component` that evaluates a `LogEvent` against a `ClientFilter`. Handles server/path exact match, substring/regex text search, keyword AND/OR matching, and time-range cutoff (server-clock based)
-- **`websocket/LogWebSocketHandler`** — Handles connect/disconnect; sends topic list on connect; processes `subscribe`, `filter`, and `clear-filters` client actions; sends `filter-ack` responses
-- **`websocket/WebSocketSessionRegistry`** — Thread-safe `ConcurrentHashMap` session store for sessions, topic subscriptions, and per-session `ClientFilter`
+- **`kafka/KafkaLogConsumer`** — Batch `@KafkaListener` consuming up to 500 records per poll, delegates each to broadcast service
+- **`service/LogBroadcastService`** — `@Async` service that sends LogEvent JSON to matching WebSocket sessions. Applies per-session topic subscription + filter checks. Per-session backpressure: drops messages when a slow client has 500+ pending sends (atomic CAS). Lazy serialization — only creates TextMessage if at least one session passes filters
+- **`filter/LogFilterEngine`** — Stateless `@Component` that evaluates a `LogEvent` against a `ClientFilter`. Handles server/path exact match, substring/regex text search (512-char limit, compiled pattern cache), keyword AND/OR matching across message+serverName+path, and time-range cutoff (server-clock based). Invalid regex drops events
+- **`websocket/LogWebSocketHandler`** — Handles connect/disconnect; sends topic list on connect; processes `subscribe`, `filter` (with 100ms per-session throttle), and `clear-filters` client actions; sends `filter-ack` responses with regex validation errors
+- **`websocket/WebSocketSessionRegistry`** — Thread-safe `ConcurrentHashMap` session store for sessions, topic subscriptions, and per-session `ClientFilter`. Fires `onRemove` listeners for cleanup on disconnect
 - **`model/LogEvent`** — Java record: `serverName`, `path`, `topic`, `timestamp`, `message`
 - **`model/ClientFilter`** — Immutable record holding per-session filter criteria: `server`, `path`, `search`, `regex`, `keywordTerms`, `keywordMode`, `timeRange`
 
@@ -58,10 +59,12 @@ Key environment variables:
 |---|---|---|
 | `KAFKA_BOOTSTRAP_SERVERS` | `172.27.12.202:9092` | Kafka broker address |
 | `KAFKA_CONSUMER_GROUP_ID` | `log-dashboard` | Consumer group ID |
+| `KAFKA_MAX_POLL_RECORDS` | `500` | Max Kafka records per batch poll |
 | `LOGSTREAM_TOPICS` | `server-topic,system-topic,app1-topic,...` | Comma-separated Kafka topics |
 | `LOGSTREAM_ALLOWED_ORIGINS` | `http://localhost:5173` | WebSocket CORS origins |
 | `SERVER_PORT` | `8080` | Application port |
 | `HOST_PORT` | `8080` | Docker host port mapping |
+| `JVM_MAX_HEAP` | `512m` | JVM max heap size (Docker only) |
 
 ## WebSocket API
 
