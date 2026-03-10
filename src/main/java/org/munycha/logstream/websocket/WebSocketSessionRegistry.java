@@ -4,6 +4,8 @@ import org.munycha.logstream.model.ClientFilter;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
@@ -14,6 +16,12 @@ public class WebSocketSessionRegistry {
     private final Set<WebSocketSession> sessions = ConcurrentHashMap.newKeySet();
     private final ConcurrentHashMap<String, Set<String>> subscriptions = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, ClientFilter> filters = new ConcurrentHashMap<>();
+    private final List<Consumer<String>> removeListeners = new ArrayList<>();
+
+    /** Register a callback invoked when a session is removed (for cleanup). */
+    public void onRemove(Consumer<String> listener) {
+        removeListeners.add(listener);
+    }
 
     public void add(WebSocketSession session) {
         sessions.add(session);
@@ -21,13 +29,16 @@ public class WebSocketSessionRegistry {
 
     public void remove(WebSocketSession session) {
         sessions.remove(session);
-        subscriptions.remove(session.getId());
-        filters.remove(session.getId());
+        String id = session.getId();
+        subscriptions.remove(id);
+        filters.remove(id);
+        removeListeners.forEach(l -> l.accept(id));
     }
 
     public void subscribe(WebSocketSession session, Set<String> topics) {
-        subscriptions.put(session.getId(), ConcurrentHashMap.newKeySet());
-        subscriptions.get(session.getId()).addAll(topics);
+        Set<String> topicSet = ConcurrentHashMap.newKeySet();
+        topicSet.addAll(topics);
+        subscriptions.put(session.getId(), topicSet);
     }
 
     public boolean isSubscribed(WebSocketSession session, String topic) {

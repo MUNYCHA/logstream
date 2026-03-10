@@ -8,7 +8,9 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -27,6 +29,12 @@ public class LogFilterEngine {
             "15m", Duration.ofMinutes(15),
             "1h",  Duration.ofHours(1)
     );
+
+    /** Max regex pattern length to prevent catastrophic backtracking DoS. */
+    private static final int MAX_REGEX_LENGTH = 512;
+
+    /** Cache compiled regex patterns — evicted when filter changes (new pattern = new entry). */
+    private final ConcurrentHashMap<String, Pattern> regexCache = new ConcurrentHashMap<>();
 
     /**
      * Returns true if the event matches all criteria in the filter.
@@ -64,7 +72,8 @@ public class LogFilterEngine {
             Instant eventTime = Instant.parse(event.timestamp());
             return eventTime.isAfter(Instant.now().minus(window));
         } catch (Exception e) {
-            // If timestamp can't be parsed, let it through
+            log.warn("Unparseable timestamp '{}' in event from server '{}' — letting event through",
+                    event.timestamp(), event.serverName());
             return true;
         }
     }
@@ -80,19 +89,31 @@ public class LogFilterEngine {
     }
 
     private boolean matchesRegex(LogEvent event, String pattern) {
-        try {
-            Pattern compiled = Pattern.compile(pattern, Pattern.CASE_INSENSITIVE);
-            return compiled.matcher(event.message()).find()
-                    || compiled.matcher(event.serverName()).find()
-                    || compiled.matcher(event.path()).find();
-        } catch (PatternSyntaxException e) {
-            // Invalid regex — skip filtering, server already sent error on filter-ack
-            return true;
+        if (pattern.length() > MAX_REGEX_LENGTH) {
+            // Reject oversized patterns — drop the event to signal the filter is active but invalid
+            return false;
         }
+
+        Pattern compiled = regexCache.computeIfAbsent(pattern, p -> {
+            try {
+                return Pattern.compile(p, Pattern.CASE_INSENSITIVE);
+            } catch (PatternSyntaxException e) {
+                return null;
+            }
+        });
+
+        if (compiled == null) {
+            // Invalid regex — drop event (filter-ack already notified client of the error)
+            return false;
+        }
+
+        return compiled.matcher(event.message()).find()
+                || compiled.matcher(event.serverName()).find()
+                || compiled.matcher(event.path()).find();
     }
 
-    private boolean matchesKeywords(LogEvent event, java.util.List<String> terms, String mode) {
-        String haystack = event.message().toLowerCase();
+    private boolean matchesKeywords(LogEvent event, List<String> terms, String mode) {
+        String haystack = (event.message() + "\0" + event.serverName() + "\0" + event.path()).toLowerCase();
         if ("and".equals(mode)) {
             return terms.stream().allMatch(kw -> haystack.contains(kw.toLowerCase()));
         }
@@ -105,6 +126,9 @@ public class LogFilterEngine {
      */
     public String validateRegex(String pattern) {
         if (pattern == null || pattern.isBlank()) return null;
+        if (pattern.length() > MAX_REGEX_LENGTH) {
+            return "Pattern too long (max " + MAX_REGEX_LENGTH + " characters)";
+        }
         try {
             Pattern.compile(pattern, Pattern.CASE_INSENSITIVE);
             return null;

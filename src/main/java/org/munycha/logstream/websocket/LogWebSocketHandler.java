@@ -14,16 +14,22 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 public class LogWebSocketHandler extends TextWebSocketHandler {
 
     private static final Logger log = LoggerFactory.getLogger(LogWebSocketHandler.class);
 
+    /** Minimum interval between filter updates per session (ms). */
+    private static final long FILTER_THROTTLE_MS = 100;
+
     private final WebSocketSessionRegistry sessionRegistry;
     private final LogstreamProperties properties;
     private final ObjectMapper objectMapper;
     private final LogFilterEngine filterEngine;
+    private final ConcurrentHashMap<String, Long> lastFilterTime = new ConcurrentHashMap<>();
+
 
     public LogWebSocketHandler(WebSocketSessionRegistry sessionRegistry,
                                LogstreamProperties properties,
@@ -54,7 +60,13 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
 
             switch (action) {
                 case "subscribe" -> handleSubscribe(session, node);
-                case "filter" -> handleFilter(session, node);
+                case "filter" -> {
+                    if (isFilterThrottled(session)) {
+                        log.debug("Throttled filter update from session {}", session.getId());
+                    } else {
+                        handleFilter(session, node);
+                    }
+                }
                 case "clear-filters" -> handleClearFilters(session);
                 default -> log.debug("Unknown action '{}' from session {}", action, session.getId());
             }
@@ -132,6 +144,14 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
+    private boolean isFilterThrottled(WebSocketSession session) {
+        long now = System.currentTimeMillis();
+        Long prev = lastFilterTime.merge(session.getId(), now, (last, cur) ->
+                (cur - last) < FILTER_THROTTLE_MS ? last : cur);
+        // If merge kept the old value (throttled), prev != now
+        return prev != now;
+    }
+
     private static String textOrNull(JsonNode parent, String field) {
         String val = parent.path(field).asText(null);
         return (val != null && !val.isBlank()) ? val : null;
@@ -141,5 +161,6 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         log.info("WebSocket disconnected: {} status={}", session.getId(), status);
         sessionRegistry.remove(session);
+        lastFilterTime.remove(session.getId());
     }
 }
