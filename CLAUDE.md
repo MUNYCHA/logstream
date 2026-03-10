@@ -41,10 +41,12 @@ All source is under `org.munycha.logstream`:
 - **`config/WebSocketConfig`** — Registers handler at `/ws/logs`, configures CORS from `logstream.allowed-origins`
 - **`config/LogstreamProperties`** — `@ConfigurationProperties(prefix="logstream")` binding topics and allowed-origins
 - **`kafka/KafkaLogConsumer`** — `@KafkaListener` consuming from configured topics, delegates to broadcast service
-- **`service/LogBroadcastService`** — `@Async` service that sends LogEvent JSON to all active WebSocket sessions
-- **`websocket/LogWebSocketHandler`** — Handles connect/disconnect; sends topic list on connect
-- **`websocket/WebSocketSessionRegistry`** — Thread-safe `ConcurrentHashMap` session store
+- **`service/LogBroadcastService`** — `@Async` service that sends LogEvent JSON to matching WebSocket sessions (applies per-session topic subscription + filter checks before sending)
+- **`filter/LogFilterEngine`** — Stateless `@Component` that evaluates a `LogEvent` against a `ClientFilter`. Handles server/path exact match, substring/regex text search, keyword AND/OR matching, and time-range cutoff (server-clock based)
+- **`websocket/LogWebSocketHandler`** — Handles connect/disconnect; sends topic list on connect; processes `subscribe`, `filter`, and `clear-filters` client actions; sends `filter-ack` responses
+- **`websocket/WebSocketSessionRegistry`** — Thread-safe `ConcurrentHashMap` session store for sessions, topic subscriptions, and per-session `ClientFilter`
 - **`model/LogEvent`** — Java record: `serverName`, `path`, `topic`, `timestamp`, `message`
+- **`model/ClientFilter`** — Immutable record holding per-session filter criteria: `server`, `path`, `search`, `regex`, `keywordTerms`, `keywordMode`, `timeRange`
 
 ## Configuration
 
@@ -65,7 +67,23 @@ Key environment variables:
 
 - **Endpoint:** `ws://localhost:8080/ws/logs`
 - **On connect:** Server sends JSON array of available topic names
-- **Streaming:** Server pushes `LogEvent` JSON objects as they arrive from Kafka
+- **Streaming:** Server pushes `LogEvent` JSON objects as they arrive from Kafka (only events matching the session's topic subscriptions and active filter)
+
+### Client → Server actions
+
+| Action | Payload | Description |
+|---|---|---|
+| `subscribe` | `{ "action": "subscribe", "topics": ["t1","t2"] }` | Subscribe to specific topics (only receives events from those topics) |
+| `filter` | `{ "action": "filter", "filters": { server, path, search, regex, keywords: { terms, mode }, timeRange } }` | Set per-session filter — server applies before sending events |
+| `clear-filters` | `{ "action": "clear-filters" }` | Remove all filters for this session |
+
+### Server → Client messages
+
+| Type | Shape | Description |
+|---|---|---|
+| Topic list | `string[]` | Sent once on connect |
+| Log event | `{ topic, serverName, path, message, timestamp }` | Live log (already filtered) |
+| Filter ack | `{ "type": "filter-ack", "filters": {...}, "regexError": "..." }` | Confirms filter applied; includes `regexError` if regex is invalid |
 
 ## Branches
 

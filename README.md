@@ -9,8 +9,9 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService  →  WebSocket Cl
 ```
 
 1. Kafka consumer subscribes to configured topics
-2. Each log event is broadcast asynchronously to all connected WebSocket clients
-3. On connection, the client receives the list of available topics, then live log events
+2. Each log event is evaluated against per-session **topic subscriptions** and **filters** (server, path, text search, regex, keywords, time range)
+3. Only matching events are broadcast asynchronously to the relevant WebSocket clients
+4. On connection, the client receives the list of available topics, then live log events that pass its filters
 
 ## WebSocket API
 
@@ -21,7 +22,7 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService  →  WebSocket Cl
 ["server-topic", "system-topic", "app1-topic"]
 ```
 
-**Message 2..N — live log events:**
+**Message 2..N — live log events (filtered per session):**
 ```json
 {
   "serverName": "web-01",
@@ -31,6 +32,37 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService  →  WebSocket Cl
   "message": "Started application in 1.2 seconds"
 }
 ```
+
+**Client → Server — subscribe to topics:**
+```json
+{ "action": "subscribe", "topics": ["app1-topic", "app2-topic"] }
+```
+
+**Client → Server — set filters (all fields optional):**
+```json
+{
+  "action": "filter",
+  "filters": {
+    "server": "web-01",
+    "path": "/var/log/app.log",
+    "search": "error",
+    "regex": false,
+    "keywords": { "terms": ["timeout", "exception"], "mode": "or" },
+    "timeRange": "15m"
+  }
+}
+```
+
+**Client → Server — clear all filters:**
+```json
+{ "action": "clear-filters" }
+```
+
+**Server → Client — filter acknowledgment:**
+```json
+{ "type": "filter-ack", "filters": { ... }, "regexError": "Unclosed group" }
+```
+The `regexError` field is only present when `regex` is `true` and the pattern is invalid.
 
 ## Tech Stack
 
@@ -50,15 +82,18 @@ src/main/java/org/munycha/logstream/
 ├── config/
 │   ├── LogstreamProperties.java   # @ConfigurationProperties binding
 │   └── WebSocketConfig.java       # WebSocket endpoint + CORS config
+├── filter/
+│   └── LogFilterEngine.java       # Stateless filter engine — evaluates LogEvent vs ClientFilter
 ├── kafka/
 │   └── KafkaLogConsumer.java      # Kafka listener
 ├── model/
+│   ├── ClientFilter.java          # Immutable per-session filter criteria record
 │   └── LogEvent.java              # Record: serverName, path, topic, timestamp, message
 ├── service/
-│   └── LogBroadcastService.java   # Async broadcast to all WebSocket sessions
+│   └── LogBroadcastService.java   # Async broadcast — applies topic + filter checks per session
 └── websocket/
-    ├── LogWebSocketHandler.java      # Connection lifecycle
-    └── WebSocketSessionRegistry.java # Tracks active sessions
+    ├── LogWebSocketHandler.java      # Connection lifecycle + subscribe/filter/clear-filters actions
+    └── WebSocketSessionRegistry.java # Tracks sessions, subscriptions, and per-session filters
 ```
 
 ## Configuration
