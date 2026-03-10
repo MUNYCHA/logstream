@@ -27,6 +27,10 @@ public class LogBroadcastService {
         try {
             TextMessage message = new TextMessage(objectMapper.writeValueAsString(event));
             sessionRegistry.forEach(session -> {
+                // Skip sessions that have subscriptions but aren't subscribed to this topic
+                if (sessionRegistry.hasSubscriptions(session) && !sessionRegistry.isSubscribed(session, event.topic())) {
+                    return;
+                }
                 synchronized (session) {
                     try {
                         session.sendMessage(message);

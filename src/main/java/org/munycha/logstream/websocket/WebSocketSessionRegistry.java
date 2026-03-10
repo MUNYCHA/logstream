@@ -11,6 +11,7 @@ import java.util.function.Consumer;
 public class WebSocketSessionRegistry {
 
     private final Set<WebSocketSession> sessions = ConcurrentHashMap.newKeySet();
+    private final ConcurrentHashMap<String, Set<String>> subscriptions = new ConcurrentHashMap<>();
 
     public void add(WebSocketSession session) {
         sessions.add(session);
@@ -18,6 +19,21 @@ public class WebSocketSessionRegistry {
 
     public void remove(WebSocketSession session) {
         sessions.remove(session);
+        subscriptions.remove(session.getId());
+    }
+
+    public void subscribe(WebSocketSession session, Set<String> topics) {
+        subscriptions.put(session.getId(), ConcurrentHashMap.newKeySet());
+        subscriptions.get(session.getId()).addAll(topics);
+    }
+
+    public boolean isSubscribed(WebSocketSession session, String topic) {
+        Set<String> topics = subscriptions.get(session.getId());
+        return topics != null && topics.contains(topic);
+    }
+
+    public boolean hasSubscriptions(WebSocketSession session) {
+        return subscriptions.containsKey(session.getId());
     }
 
     public void forEach(Consumer<WebSocketSession> action) {
