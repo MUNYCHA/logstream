@@ -15,6 +15,7 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.Map;
 
 @Component
 public class LogWebSocketHandler extends TextWebSocketHandler {
@@ -46,7 +47,10 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
         log.info("WebSocket connected: {} (active sessions: {})", session.getId(), sessionRegistry.activeCount() + 1);
         sessionRegistry.add(session);
         try {
-            session.sendMessage(new TextMessage(objectMapper.writeValueAsString(properties.getTopics())));
+            Map<String, Object> topicMessage = new LinkedHashMap<>();
+            topicMessage.put("type", "topics");
+            topicMessage.put("topics", properties.getTopics());
+            session.sendMessage(new TextMessage(objectMapper.writeValueAsString(topicMessage)));
         } catch (Exception e) {
             log.error("Failed to send topic list to session {}", session.getId(), e);
         }

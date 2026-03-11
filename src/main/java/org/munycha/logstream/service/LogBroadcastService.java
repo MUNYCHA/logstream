@@ -12,11 +12,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
 
 @Service
 public class LogBroadcastService {
@@ -29,9 +30,20 @@ public class LogBroadcastService {
     /** Max events to batch into a single WebSocket message. */
     private static final int MAX_BATCH_SIZE = 100;
 
+    /** Stats broadcast interval in ms. */
+    private static final long STATS_INTERVAL_MS = 2000;
+
     private final WebSocketSessionRegistry sessionRegistry;
     private final ObjectMapper objectMapper;
     private final LogFilterEngine filterEngine;
+
+    /** Per-topic event count accumulator for stats broadcast. */
+    private final AtomicReference<ConcurrentHashMap<String, LongAdder>> statsCounters =
+            new AtomicReference<>(new ConcurrentHashMap<>());
+
+    /** Per-topic active servers accumulator for stats broadcast. */
+    private final AtomicReference<ConcurrentHashMap<String, Set<String>>> statsServers =
+            new AtomicReference<>(new ConcurrentHashMap<>());
 
     /** Incoming events queue — drained every flush interval. */
     private final ConcurrentLinkedQueue<LogEvent> incomingQueue = new ConcurrentLinkedQueue<>();
@@ -70,13 +82,23 @@ public class LogBroadcastService {
         }
         if (batch.isEmpty()) return;
 
+        // Accumulate stats for all events (regardless of subscriptions)
+        for (LogEvent evt : batch) {
+            statsCounters.get()
+                    .computeIfAbsent(evt.topic(), k -> new LongAdder())
+                    .increment();
+            statsServers.get()
+                    .computeIfAbsent(evt.topic(), k -> ConcurrentHashMap.newKeySet())
+                    .add(evt.serverName());
+        }
+
         try {
             sessionRegistry.forEach(session -> {
                 List<LogEvent> matched = new ArrayList<>();
 
                 for (LogEvent evt : batch) {
-                    // Skip events not matching session's topic subscription
-                    if (sessionRegistry.hasSubscriptions(session) && !sessionRegistry.isSubscribed(session, evt.topic())) {
+                    // Require explicit subscription — no logs until client subscribes
+                    if (!sessionRegistry.isSubscribed(session, evt.topic())) {
                         continue;
                     }
 
@@ -118,6 +140,53 @@ public class LogBroadcastService {
             });
         } catch (Exception e) {
             log.error("Failed to flush broadcast batch: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Broadcasts lightweight topic stats (rates + active servers) to ALL connected sessions
+     * every 2 seconds — even those with no subscriptions. Powers sidebar metadata.
+     */
+    @Scheduled(fixedDelay = STATS_INTERVAL_MS)
+    public void flushStats() {
+        // Atomically swap accumulators so flush() writes to fresh maps
+        ConcurrentHashMap<String, LongAdder> counts = statsCounters.getAndSet(new ConcurrentHashMap<>());
+        ConcurrentHashMap<String, Set<String>> servers = statsServers.getAndSet(new ConcurrentHashMap<>());
+
+        if (counts.isEmpty() && servers.isEmpty()) return;
+
+        try {
+            Map<String, Object> topicStats = new LinkedHashMap<>();
+            Set<String> allTopics = new HashSet<>(counts.keySet());
+            allTopics.addAll(servers.keySet());
+
+            for (String topic : allTopics) {
+                Map<String, Object> entry = new LinkedHashMap<>();
+                LongAdder counter = counts.get(topic);
+                entry.put("rate", counter != null ? counter.sum() : 0);
+                Set<String> serverSet = servers.get(topic);
+                entry.put("servers", serverSet != null ? serverSet : Set.of());
+                topicStats.put(topic, entry);
+            }
+
+            Map<String, Object> message = new LinkedHashMap<>();
+            message.put("type", "stats");
+            message.put("topics", topicStats);
+            message.put("intervalMs", STATS_INTERVAL_MS);
+
+            TextMessage textMessage = new TextMessage(objectMapper.writeValueAsString(message));
+
+            sessionRegistry.forEach(session -> {
+                synchronized (session) {
+                    try {
+                        session.sendMessage(textMessage);
+                    } catch (Exception e) {
+                        log.warn("Failed to send stats to session {}", session.getId());
+                    }
+                }
+            });
+        } catch (Exception e) {
+            log.error("Failed to flush stats: {}", e.getMessage(), e);
         }
     }
 
