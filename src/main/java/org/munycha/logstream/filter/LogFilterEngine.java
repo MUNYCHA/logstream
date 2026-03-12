@@ -8,9 +8,10 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -32,9 +33,17 @@ public class LogFilterEngine {
 
     /** Max regex pattern length to prevent catastrophic backtracking DoS. */
     private static final int MAX_REGEX_LENGTH = 512;
+    private static final int REGEX_CACHE_LIMIT = 256;
 
     /** Cache compiled regex patterns — evicted when filter changes (new pattern = new entry). */
-    private final ConcurrentHashMap<String, Pattern> regexCache = new ConcurrentHashMap<>();
+    private final Map<String, Pattern> regexCache = Collections.synchronizedMap(
+            new LinkedHashMap<>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Pattern> eldest) {
+                    return size() > REGEX_CACHE_LIMIT;
+                }
+            }
+    );
 
     /**
      * Returns true if the event matches all criteria in the filter.
@@ -83,9 +92,9 @@ public class LogFilterEngine {
             return matchesRegex(event, search);
         }
         String lower = search.toLowerCase();
-        return event.message().toLowerCase().contains(lower)
-                || event.serverName().toLowerCase().contains(lower)
-                || event.path().toLowerCase().contains(lower);
+        return safeLower(event.message()).contains(lower)
+                || safeLower(event.serverName()).contains(lower)
+                || safeLower(event.path()).contains(lower);
     }
 
     private boolean matchesRegex(LogEvent event, String pattern) {
@@ -94,26 +103,31 @@ public class LogFilterEngine {
             return false;
         }
 
-        Pattern compiled = regexCache.computeIfAbsent(pattern, p -> {
-            try {
-                return Pattern.compile(p, Pattern.CASE_INSENSITIVE);
-            } catch (PatternSyntaxException e) {
-                return null;
+        Pattern compiled;
+        synchronized (regexCache) {
+            compiled = regexCache.get(pattern);
+            if (compiled == null && !regexCache.containsKey(pattern)) {
+                try {
+                    compiled = Pattern.compile(pattern, Pattern.CASE_INSENSITIVE);
+                } catch (PatternSyntaxException e) {
+                    compiled = null;
+                }
+                regexCache.put(pattern, compiled);
             }
-        });
+        }
 
         if (compiled == null) {
             // Invalid regex — drop event (filter-ack already notified client of the error)
             return false;
         }
 
-        return compiled.matcher(event.message()).find()
-                || compiled.matcher(event.serverName()).find()
-                || compiled.matcher(event.path()).find();
+        return compiled.matcher(nullToEmpty(event.message())).find()
+                || compiled.matcher(nullToEmpty(event.serverName())).find()
+                || compiled.matcher(nullToEmpty(event.path())).find();
     }
 
     private boolean matchesKeywords(LogEvent event, List<String> terms, String mode) {
-        String haystack = (event.message() + "\0" + event.serverName() + "\0" + event.path()).toLowerCase();
+        String haystack = (nullToEmpty(event.message()) + "\0" + nullToEmpty(event.serverName()) + "\0" + nullToEmpty(event.path())).toLowerCase();
         if ("and".equals(mode)) {
             return terms.stream().allMatch(kw -> haystack.contains(kw.toLowerCase()));
         }
@@ -135,5 +149,13 @@ public class LogFilterEngine {
         } catch (PatternSyntaxException e) {
             return e.getDescription();
         }
+    }
+
+    private static String nullToEmpty(String value) {
+        return value == null ? "" : value;
+    }
+
+    private static String safeLower(String value) {
+        return nullToEmpty(value).toLowerCase();
     }
 }

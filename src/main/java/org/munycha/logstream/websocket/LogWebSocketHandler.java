@@ -22,14 +22,10 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
 
     private static final Logger log = LoggerFactory.getLogger(LogWebSocketHandler.class);
 
-    /** Minimum interval between filter updates per session (ms). */
-    private static final long FILTER_THROTTLE_MS = 100;
-
     private final WebSocketSessionRegistry sessionRegistry;
     private final LogstreamProperties properties;
     private final ObjectMapper objectMapper;
     private final LogFilterEngine filterEngine;
-    private final ConcurrentHashMap<String, Long> lastFilterTime = new ConcurrentHashMap<>();
 
 
     public LogWebSocketHandler(WebSocketSessionRegistry sessionRegistry,
@@ -65,11 +61,7 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
             switch (action) {
                 case "subscribe" -> handleSubscribe(session, node);
                 case "filter" -> {
-                    if (isFilterThrottled(session)) {
-                        log.debug("Throttled filter update from session {}", session.getId());
-                    } else {
-                        handleFilter(session, node);
-                    }
+                    handleFilter(session, node);
                 }
                 case "clear-filters" -> handleClearFilters(session);
                 default -> log.debug("Unknown action '{}' from session {}", action, session.getId());
@@ -83,7 +75,13 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
         JsonNode topicsNode = node.path("topics");
         if (topicsNode.isArray()) {
             Set<String> topics = new HashSet<>();
-            topicsNode.forEach(t -> topics.add(t.asText()));
+            Set<String> allowedTopics = new HashSet<>(properties.getTopics());
+            topicsNode.forEach(t -> {
+                String topic = t.asText("").trim();
+                if (!topic.isEmpty() && allowedTopics.contains(topic)) {
+                    topics.add(topic);
+                }
+            });
             sessionRegistry.subscribe(session, topics);
             log.info("Session {} subscribed to topics: {}", session.getId(), topics);
         }
@@ -111,7 +109,7 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
         }
         String keywordMode = kw.path("mode").asText("or");
 
-        ClientFilter filter = new ClientFilter(server, path, search, regex, keywordTerms, keywordMode, timeRange);
+        ClientFilter filter = ClientFilter.sanitize(server, path, search, regex, keywordTerms, keywordMode, timeRange);
         sessionRegistry.setFilter(session, filter);
 
         log.debug("Session {} updated filter: {}", session.getId(), filter);
@@ -148,14 +146,6 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    private boolean isFilterThrottled(WebSocketSession session) {
-        long now = System.currentTimeMillis();
-        Long prev = lastFilterTime.merge(session.getId(), now, (last, cur) ->
-                (cur - last) < FILTER_THROTTLE_MS ? last : cur);
-        // If merge kept the old value (throttled), prev != now
-        return prev != now;
-    }
-
     private static String textOrNull(JsonNode parent, String field) {
         String val = parent.path(field).asText(null);
         return (val != null && !val.isBlank()) ? val : null;
@@ -165,6 +155,5 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         log.info("WebSocket disconnected: {} status={}", session.getId(), status);
         sessionRegistry.remove(session);
-        lastFilterTime.remove(session.getId());
     }
 }

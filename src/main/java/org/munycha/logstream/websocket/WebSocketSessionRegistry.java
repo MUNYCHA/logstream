@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
 @Component
@@ -16,7 +17,7 @@ public class WebSocketSessionRegistry {
     private final Set<WebSocketSession> sessions = ConcurrentHashMap.newKeySet();
     private final ConcurrentHashMap<String, Set<String>> subscriptions = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, ClientFilter> filters = new ConcurrentHashMap<>();
-    private final List<Consumer<String>> removeListeners = new ArrayList<>();
+    private final List<Consumer<String>> removeListeners = new CopyOnWriteArrayList<>();
 
     /** Register a callback invoked when a session is removed (for cleanup). */
     public void onRemove(Consumer<String> listener) {

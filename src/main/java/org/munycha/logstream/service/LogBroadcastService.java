@@ -27,6 +27,9 @@ public class LogBroadcastService {
     /** Max queued messages per session before dropping — prevents slow-client backpressure. */
     private static final int MAX_PENDING_PER_SESSION = 500;
 
+    /** Max queued events waiting for flush before oldest events are dropped. */
+    private static final int MAX_INCOMING_QUEUE = 20_000;
+
     /** Max events to batch into a single WebSocket message. */
     private static final int MAX_BATCH_SIZE = 100;
 
@@ -47,6 +50,7 @@ public class LogBroadcastService {
 
     /** Incoming events queue — drained every flush interval. */
     private final ConcurrentLinkedQueue<LogEvent> incomingQueue = new ConcurrentLinkedQueue<>();
+    private final AtomicInteger incomingQueueSize = new AtomicInteger(0);
 
     /** Tracks in-flight send count per session to detect slow clients. */
     private final ConcurrentHashMap<String, AtomicInteger> sendQueue = new ConcurrentHashMap<>();
@@ -65,7 +69,28 @@ public class LogBroadcastService {
      * Non-blocking so it never stalls the Kafka consumer thread.
      */
     public void broadcast(LogEvent event) {
-        incomingQueue.add(event);
+        if (event == null || !event.isValid()) {
+            log.debug("Dropping invalid log event: {}", event);
+            return;
+        }
+
+        while (true) {
+            int currentSize = incomingQueueSize.get();
+            if (currentSize < MAX_INCOMING_QUEUE) {
+                if (incomingQueueSize.compareAndSet(currentSize, currentSize + 1)) {
+                    incomingQueue.add(event);
+                    return;
+                }
+                continue;
+            }
+
+            LogEvent dropped = incomingQueue.poll();
+            if (dropped != null) {
+                incomingQueueSize.decrementAndGet();
+            } else {
+                incomingQueueSize.compareAndSet(currentSize, 0);
+            }
+        }
     }
 
     /**
@@ -78,6 +103,7 @@ public class LogBroadcastService {
         List<LogEvent> batch = new ArrayList<>(MAX_BATCH_SIZE * 2);
         LogEvent event;
         while ((event = incomingQueue.poll()) != null) {
+            incomingQueueSize.decrementAndGet();
             batch.add(event);
         }
         if (batch.isEmpty()) return;
@@ -111,31 +137,27 @@ public class LogBroadcastService {
                     matched.add(evt);
                 }
 
-                if (matched.isEmpty()) return;
+                if (matched.isEmpty()) {
+                    return;
+                }
 
-                // Backpressure check
                 AtomicInteger pending = sendQueue.computeIfAbsent(session.getId(), k -> new AtomicInteger(0));
-                int current;
-                do {
-                    current = pending.get();
-                    if (current >= MAX_PENDING_PER_SESSION) {
-                        log.debug("Dropping batch for slow session {} (pending: {})", session.getId(), current);
+                for (int start = 0; start < matched.size(); start += MAX_BATCH_SIZE) {
+                    int end = Math.min(start + MAX_BATCH_SIZE, matched.size());
+                    if (!reserveSendSlot(session, pending)) {
                         return;
                     }
-                } while (!pending.compareAndSet(current, current + 1));
 
-                try {
-                    // Send as JSON array if multiple events, single object if one
-                    String json;
-                    if (matched.size() == 1) {
-                        json = objectMapper.writeValueAsString(matched.get(0));
-                    } else {
-                        json = objectMapper.writeValueAsString(matched);
+                    try {
+                        List<LogEvent> chunk = matched.subList(start, end);
+                        String json = chunk.size() == 1
+                                ? objectMapper.writeValueAsString(chunk.get(0))
+                                : objectMapper.writeValueAsString(chunk);
+                        trySend(session, new TextMessage(json), pending);
+                    } catch (Exception e) {
+                        log.error("Failed to serialize batch for session {}: {}", session.getId(), e.getMessage());
+                        pending.decrementAndGet();
                     }
-                    trySend(session, new TextMessage(json), pending);
-                } catch (Exception e) {
-                    log.error("Failed to serialize batch for session {}: {}", session.getId(), e.getMessage());
-                    pending.decrementAndGet();
                 }
             });
         } catch (Exception e) {
@@ -177,17 +199,27 @@ public class LogBroadcastService {
             TextMessage textMessage = new TextMessage(objectMapper.writeValueAsString(message));
 
             sessionRegistry.forEach(session -> {
-                synchronized (session) {
-                    try {
-                        session.sendMessage(textMessage);
-                    } catch (Exception e) {
-                        log.warn("Failed to send stats to session {}", session.getId());
-                    }
+                AtomicInteger pending = sendQueue.computeIfAbsent(session.getId(), k -> new AtomicInteger(0));
+                if (!reserveSendSlot(session, pending)) {
+                    return;
                 }
+                trySend(session, textMessage, pending);
             });
         } catch (Exception e) {
             log.error("Failed to flush stats: {}", e.getMessage(), e);
         }
+    }
+
+    private boolean reserveSendSlot(WebSocketSession session, AtomicInteger pending) {
+        int current;
+        do {
+            current = pending.get();
+            if (current >= MAX_PENDING_PER_SESSION) {
+                log.debug("Dropping message for slow session {} (pending: {})", session.getId(), current);
+                return false;
+            }
+        } while (!pending.compareAndSet(current, current + 1));
+        return true;
     }
 
     private void trySend(WebSocketSession session, TextMessage message, AtomicInteger pending) {
