@@ -59,7 +59,7 @@ public class LogFilterEngine {
             return false;
         }
 
-        if (filter.hasTimeRange() && !matchesTimeRange(event, filter.timeRange())) {
+        if (filter.hasTimeRange() && !matchesTimeRange(event, filter)) {
             return false;
         }
 
@@ -74,8 +74,10 @@ public class LogFilterEngine {
         return true;
     }
 
-    private boolean matchesTimeRange(LogEvent event, String timeRange) {
-        Duration window = TIME_RANGES.get(timeRange);
+    private boolean matchesTimeRange(LogEvent event, ClientFilter filter) {
+        Duration window = "custom".equals(filter.timeRange())
+                ? (filter.timeRangeMs() > 0 ? Duration.ofMillis(filter.timeRangeMs()) : null)
+                : TIME_RANGES.get(filter.timeRange());
         if (window == null) return true;
         try {
             Instant eventTime = Instant.parse(event.timestamp());

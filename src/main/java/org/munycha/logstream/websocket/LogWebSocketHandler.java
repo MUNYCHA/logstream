@@ -95,6 +95,7 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
         String search = textOrNull(f, "search");
         boolean regex = f.path("regex").asBoolean(false);
         String timeRange = f.path("timeRange").asText("all");
+        long timeRangeMs = f.path("timeRangeMs").asLong(0);
 
         List<String> keywordTerms = new ArrayList<>();
         JsonNode kw = f.path("keywords");
@@ -109,7 +110,7 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
         }
         String keywordMode = kw.path("mode").asText("or");
 
-        ClientFilter filter = ClientFilter.sanitize(server, path, search, regex, keywordTerms, keywordMode, timeRange);
+        ClientFilter filter = ClientFilter.sanitize(server, path, search, regex, keywordTerms, keywordMode, timeRange, timeRangeMs);
         sessionRegistry.setFilter(session, filter);
 
         log.debug("Session {} updated filter: {}", session.getId(), filter);
