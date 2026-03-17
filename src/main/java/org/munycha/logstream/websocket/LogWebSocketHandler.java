@@ -3,7 +3,6 @@ package org.munycha.logstream.websocket;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.munycha.logstream.config.LogstreamProperties;
-import org.munycha.logstream.filter.LogFilterEngine;
 import org.munycha.logstream.model.ClientFilter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,17 +24,13 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
     private final WebSocketSessionRegistry sessionRegistry;
     private final LogstreamProperties properties;
     private final ObjectMapper objectMapper;
-    private final LogFilterEngine filterEngine;
-
 
     public LogWebSocketHandler(WebSocketSessionRegistry sessionRegistry,
                                LogstreamProperties properties,
-                               ObjectMapper objectMapper,
-                               LogFilterEngine filterEngine) {
+                               ObjectMapper objectMapper) {
         this.sessionRegistry = sessionRegistry;
         this.properties = properties;
         this.objectMapper = objectMapper;
-        this.filterEngine = filterEngine;
     }
 
     @Override
@@ -60,9 +55,7 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
 
             switch (action) {
                 case "subscribe" -> handleSubscribe(session, node);
-                case "filter" -> {
-                    handleFilter(session, node);
-                }
+                case "filter" -> handleFilter(session, node);
                 case "clear-filters" -> handleClearFilters(session);
                 default -> log.debug("Unknown action '{}' from session {}", action, session.getId());
             }
@@ -93,7 +86,6 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
         String server = textOrNull(f, "server");
         String path = textOrNull(f, "path");
         String search = textOrNull(f, "search");
-        boolean regex = f.path("regex").asBoolean(false);
         String timeRange = f.path("timeRange").asText("all");
         long timeRangeMs = f.path("timeRangeMs").asLong(0);
 
@@ -110,41 +102,15 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
         }
         String keywordMode = kw.path("mode").asText("or");
 
-        ClientFilter filter = ClientFilter.sanitize(server, path, search, regex, keywordTerms, keywordMode, timeRange, timeRangeMs);
+        ClientFilter filter = ClientFilter.sanitize(server, path, search, keywordTerms, keywordMode, timeRange, timeRangeMs);
         sessionRegistry.setFilter(session, filter);
 
         log.debug("Session {} updated filter: {}", session.getId(), filter);
-
-        // Send filter-ack back to client
-        sendFilterAck(session, filter);
     }
 
     private void handleClearFilters(WebSocketSession session) {
         sessionRegistry.setFilter(session, ClientFilter.EMPTY);
         log.debug("Session {} cleared filters", session.getId());
-        sendFilterAck(session, ClientFilter.EMPTY);
-    }
-
-    private void sendFilterAck(WebSocketSession session, ClientFilter filter) {
-        try {
-            Map<String, Object> ack = new LinkedHashMap<>();
-            ack.put("type", "filter-ack");
-            ack.put("filters", filter);
-
-            // Include regex validation error if applicable
-            if (filter.regex() && filter.hasSearch()) {
-                String error = filterEngine.validateRegex(filter.search());
-                if (error != null) {
-                    ack.put("regexError", error);
-                }
-            }
-
-            synchronized (session) {
-                session.sendMessage(new TextMessage(objectMapper.writeValueAsString(ack)));
-            }
-        } catch (Exception e) {
-            log.warn("Failed to send filter-ack to session {}", session.getId(), e);
-        }
     }
 
     private static String textOrNull(JsonNode parent, String field) {

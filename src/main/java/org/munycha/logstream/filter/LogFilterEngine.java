@@ -8,12 +8,8 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Pattern;
-import java.util.regex.PatternSyntaxException;
 
 /**
  * Stateless engine that evaluates whether a LogEvent passes a ClientFilter.
@@ -29,20 +25,6 @@ public class LogFilterEngine {
             "5m",  Duration.ofMinutes(5),
             "15m", Duration.ofMinutes(15),
             "1h",  Duration.ofHours(1)
-    );
-
-    /** Max regex pattern length to prevent catastrophic backtracking DoS. */
-    private static final int MAX_REGEX_LENGTH = 512;
-    private static final int REGEX_CACHE_LIMIT = 256;
-
-    /** Cache compiled regex patterns — evicted when filter changes (new pattern = new entry). */
-    private final Map<String, Pattern> regexCache = Collections.synchronizedMap(
-            new LinkedHashMap<>(64, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, Pattern> eldest) {
-                    return size() > REGEX_CACHE_LIMIT;
-                }
-            }
     );
 
     /**
@@ -63,7 +45,7 @@ public class LogFilterEngine {
             return false;
         }
 
-        if (filter.hasSearch() && !matchesSearch(event, filter.search(), filter.regex())) {
+        if (filter.hasSearch() && !matchesSearch(event, filter.search())) {
             return false;
         }
 
@@ -89,64 +71,17 @@ public class LogFilterEngine {
         }
     }
 
-    private boolean matchesSearch(LogEvent event, String search, boolean isRegex) {
-        if (isRegex) {
-            return matchesRegex(event, search);
-        }
-        String lower = search.toLowerCase();
-        return safeLower(event.message()).contains(lower);
-    }
-
-    private boolean matchesRegex(LogEvent event, String pattern) {
-        if (pattern.length() > MAX_REGEX_LENGTH) {
-            // Reject oversized patterns — drop the event to signal the filter is active but invalid
-            return false;
-        }
-
-        Pattern compiled;
-        synchronized (regexCache) {
-            compiled = regexCache.get(pattern);
-            if (compiled == null && !regexCache.containsKey(pattern)) {
-                try {
-                    compiled = Pattern.compile(pattern, Pattern.CASE_INSENSITIVE);
-                } catch (PatternSyntaxException e) {
-                    compiled = null;
-                }
-                regexCache.put(pattern, compiled);
-            }
-        }
-
-        if (compiled == null) {
-            // Invalid regex — drop event (filter-ack already notified client of the error)
-            return false;
-        }
-
-        return compiled.matcher(nullToEmpty(event.message())).find();
+    private boolean matchesSearch(LogEvent event, String search) {
+        return safeLower(event.message()).contains(search.toLowerCase());
     }
 
     private boolean matchesKeywords(LogEvent event, List<String> terms, String mode) {
+        // terms are already lowercased by ClientFilter.sanitize()
         String haystack = nullToEmpty(event.message()).toLowerCase();
         if ("and".equals(mode)) {
-            return terms.stream().allMatch(kw -> haystack.contains(kw.toLowerCase()));
+            return terms.stream().allMatch(haystack::contains);
         }
-        // default "or"
-        return terms.stream().anyMatch(kw -> haystack.contains(kw.toLowerCase()));
-    }
-
-    /**
-     * Validates a regex pattern. Returns null if valid, error message if invalid.
-     */
-    public String validateRegex(String pattern) {
-        if (pattern == null || pattern.isBlank()) return null;
-        if (pattern.length() > MAX_REGEX_LENGTH) {
-            return "Pattern too long (max " + MAX_REGEX_LENGTH + " characters)";
-        }
-        try {
-            Pattern.compile(pattern, Pattern.CASE_INSENSITIVE);
-            return null;
-        } catch (PatternSyntaxException e) {
-            return e.getDescription();
-        }
+        return terms.stream().anyMatch(haystack::contains);
     }
 
     private static String nullToEmpty(String value) {

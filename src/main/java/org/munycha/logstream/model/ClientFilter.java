@@ -10,13 +10,12 @@ public record ClientFilter(
         String server,
         String path,
         String search,
-        boolean regex,
         List<String> keywordTerms,
         String keywordMode,   // "and" | "or"
         String timeRange,     // "all" | "1m" | "5m" | "15m" | "1h" | "custom"
         long timeRangeMs      // used when timeRange == "custom"
 ) {
-    public static final ClientFilter EMPTY = new ClientFilter(null, null, null, false, List.of(), "or", "all", 0);
+    public static final ClientFilter EMPTY = new ClientFilter(null, null, null, List.of(), "or", "all", 0);
     private static final List<String> VALID_TIME_RANGES = List.of("all", "1m", "5m", "15m", "1h", "custom");
 
     public boolean hasServer()   { return server != null && !server.isBlank(); }
@@ -37,7 +36,6 @@ public record ClientFilter(
             String server,
             String path,
             String search,
-            boolean regex,
             List<String> keywordTerms,
             String keywordMode,
             String timeRange,
@@ -60,7 +58,6 @@ public record ClientFilter(
                 normalize(server),
                 normalize(path),
                 normalize(search),
-                regex,
                 normalizedTerms,
                 normalizedMode,
                 normalizedTimeRange,
