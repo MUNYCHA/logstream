@@ -94,9 +94,7 @@ public class LogFilterEngine {
             return matchesRegex(event, search);
         }
         String lower = search.toLowerCase();
-        return safeLower(event.message()).contains(lower)
-                || safeLower(event.serverName()).contains(lower)
-                || safeLower(event.path()).contains(lower);
+        return safeLower(event.message()).contains(lower);
     }
 
     private boolean matchesRegex(LogEvent event, String pattern) {
@@ -123,13 +121,11 @@ public class LogFilterEngine {
             return false;
         }
 
-        return compiled.matcher(nullToEmpty(event.message())).find()
-                || compiled.matcher(nullToEmpty(event.serverName())).find()
-                || compiled.matcher(nullToEmpty(event.path())).find();
+        return compiled.matcher(nullToEmpty(event.message())).find();
     }
 
     private boolean matchesKeywords(LogEvent event, List<String> terms, String mode) {
-        String haystack = (nullToEmpty(event.message()) + "\0" + nullToEmpty(event.serverName()) + "\0" + nullToEmpty(event.path())).toLowerCase();
+        String haystack = nullToEmpty(event.message()).toLowerCase();
         if ("and".equals(mode)) {
             return terms.stream().allMatch(kw -> haystack.contains(kw.toLowerCase()));
         }
