@@ -29,3 +29,4 @@ spring:
 logstream:
   topics: ${LOGSTREAM_TOPICS:server-topic,system-topic,app1-topic,app2-topic,app3-topic,app4-topic}
   allowed-origins: ${LOGSTREAM_ALLOWED_ORIGINS:http://localhost:5173}
+  log-files: {}

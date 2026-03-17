@@ -4,7 +4,7 @@ Guidance for Claude Code. For deep implementation details, see [ARCHITECTURE.md]
 
 ## Project Overview
 
-Logstream is a real-time log streaming WebSocket server. Kafka → WebSocket. No REST API.
+Logstream is a real-time log streaming server. Kafka → WebSocket. Also exposes a REST API for log file downloads.
 
 **Data flow:** Kafka → `KafkaLogConsumer` (batch poll) → `ConcurrentLinkedQueue` → `LogBroadcastService` (@Scheduled 100ms flush) → per-session filter → WebSocket clients
 
@@ -28,7 +28,9 @@ Java 17, Spring Boot 3.5.x, Maven 3.9.x (wrapper), Spring WebSocket (native Text
 ```
 config/AsyncConfig          @EnableAsync + @EnableScheduling, ThreadPoolTaskExecutor (4-8 threads, 10k queue)
 config/WebSocketConfig      /ws/logs endpoint, CORS, 512KB buffer, 5s send timeout, 5min idle
-config/LogstreamProperties  @ConfigurationProperties: topics, allowedOrigins
+config/CorsConfig           HTTP CORS — allows GET /api/** from configured allowed origins
+config/LogstreamProperties  @ConfigurationProperties: topics, allowedOrigins, logFiles (topic → file path map)
+controller/LogDownloadController  GET /api/logs/download?topic=X — streams log file to browser
 kafka/KafkaLogConsumer      Batch @KafkaListener (up to 500/poll), enqueues to broadcast service
 service/LogBroadcastService Queue + @Scheduled(100ms) flush, per-session filter + backpressure (500 pending)
 filter/LogFilterEngine      Stateless: server/path exact, time range, substring/regex search, keyword AND/OR
@@ -83,6 +85,8 @@ Default: `application.yaml`. Production: `application-prod.yaml` (requires all e
 | `SERVER_PORT` | `8080` | App port |
 | `HOST_PORT` | `8080` | Docker host port |
 | `JVM_MAX_HEAP` | `512m` | JVM heap (Docker only) |
+| `LOG_DIR` | `/var/log/logstream` | Host log directory mounted into container |
+| `LOGSTREAM_LOG_FILES_<TOPIC>` | — | Full path to log file for each topic (e.g. `LOGSTREAM_LOG_FILES_SERVER_TOPIC`) |
 
 ## Branches
 

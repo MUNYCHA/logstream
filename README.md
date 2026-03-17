@@ -1,6 +1,6 @@
 # Logstream
 
-A real-time log streaming bridge between **Kafka** and **WebSocket** clients, built with Spring Boot 3.
+A real-time log streaming bridge between **Kafka** and **WebSocket** clients, built with Spring Boot 3. Also exposes a REST API for downloading log files directly from the server.
 
 ## How It Works
 
@@ -89,8 +89,11 @@ src/main/java/org/munycha/logstream/
 ├── LogstreamApplication.java
 ├── config/
 │   ├── AsyncConfig.java           # @EnableAsync + @EnableScheduling, bounded ThreadPoolTaskExecutor
+│   ├── CorsConfig.java            # HTTP CORS for /api/**
 │   ├── LogstreamProperties.java   # @ConfigurationProperties binding
 │   └── WebSocketConfig.java       # WebSocket endpoint + CORS + container limits
+├── controller/
+│   └── LogDownloadController.java # GET /api/logs/download?topic=X
 ├── filter/
 │   └── LogFilterEngine.java       # Stateless filter engine — evaluates LogEvent vs ClientFilter
 ├── kafka/
@@ -117,8 +120,10 @@ All config is externalized via environment variables with sensible dev defaults.
 | `KAFKA_CONSUMER_GROUP_ID` | `log-dashboard` | Kafka consumer group |
 | `KAFKA_MAX_POLL_RECORDS` | `500` | Max Kafka records per batch poll |
 | `LOGSTREAM_TOPICS` | `server-topic,system-topic,...` | Comma-separated topics to subscribe |
-| `LOGSTREAM_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed WebSocket origin |
+| `LOGSTREAM_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed WebSocket and REST API origin |
 | `JVM_MAX_HEAP` | `512m` | JVM max heap size (Docker only) |
+| `LOG_DIR` | `/var/log/logstream` | Host log directory mounted into container (Docker only) |
+| `LOGSTREAM_LOG_FILES_<TOPIC>` | — | Full path to log file for each topic (e.g. `LOGSTREAM_LOG_FILES_SERVER_TOPIC=/var/log/logstream/server.log`) |
 
 ## Running Locally
 
@@ -172,6 +177,13 @@ KAFKA_MAX_POLL_RECORDS=500
 LOGSTREAM_TOPICS=server-topic,system-topic,app1-topic,app2-topic,app3-topic,app4-topic
 LOGSTREAM_ALLOWED_ORIGINS=https://myapp.com
 JVM_MAX_HEAP=512m
+LOG_DIR=/var/log/logstream
+LOGSTREAM_LOG_FILES_SERVER_TOPIC=/var/log/logstream/server.log
+LOGSTREAM_LOG_FILES_SYSTEM_TOPIC=/var/log/logstream/system.log
+LOGSTREAM_LOG_FILES_APP1_TOPIC=/var/log/logstream/app1.log
+LOGSTREAM_LOG_FILES_APP2_TOPIC=/var/log/logstream/app2.log
+LOGSTREAM_LOG_FILES_APP3_TOPIC=/var/log/logstream/app3.log
+LOGSTREAM_LOG_FILES_APP4_TOPIC=/var/log/logstream/app4.log
 ```
 
 **3. Run**

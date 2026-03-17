@@ -26,6 +26,13 @@ spring:
 logstream:
   topics: ${LOGSTREAM_TOPICS}
   allowed-origins: ${LOGSTREAM_ALLOWED_ORIGINS}
+  log-files:
+    server-topic: ${LOGSTREAM_LOG_FILES_SERVER_TOPIC}
+    system-topic: ${LOGSTREAM_LOG_FILES_SYSTEM_TOPIC}
+    app1-topic: ${LOGSTREAM_LOG_FILES_APP1_TOPIC}
+    app2-topic: ${LOGSTREAM_LOG_FILES_APP2_TOPIC}
+    app3-topic: ${LOGSTREAM_LOG_FILES_APP3_TOPIC}
+    app4-topic: ${LOGSTREAM_LOG_FILES_APP4_TOPIC}
 
 management:
   endpoints:

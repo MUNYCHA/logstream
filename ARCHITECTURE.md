@@ -207,8 +207,11 @@ src/main/java/org/munycha/logstream/
 ├── LogstreamApplication.java           # @SpringBootApplication entry point
 ├── config/
 │   ├── AsyncConfig.java                # @EnableAsync + @EnableScheduling, ThreadPoolTaskExecutor
-│   ├── LogstreamProperties.java        # @ConfigurationProperties: topics, allowedOrigins
+│   ├── CorsConfig.java                 # HTTP CORS — allows GET /api/** from allowed origins
+│   ├── LogstreamProperties.java        # @ConfigurationProperties: topics, allowedOrigins, logFiles
 │   └── WebSocketConfig.java            # /ws/logs endpoint, CORS, container limits
+├── controller/
+│   └── LogDownloadController.java      # GET /api/logs/download?topic=X — streams log file to browser
 ├── filter/
 │   └── LogFilterEngine.java            # Stateless filter: server/path/time/search/regex/keywords
 ├── kafka/
@@ -223,6 +226,6 @@ src/main/java/org/munycha/logstream/
     └── WebSocketSessionRegistry.java   # ConcurrentHashMap session store + subscriptions + filters
 
 src/main/resources/
-├── application.yaml                    # Dev defaults (Kafka, topics, CORS)
-└── application-prod.yaml              # Prod overrides (no defaults, actuator enabled)
+├── application.yaml                    # Dev defaults (Kafka, topics, CORS, log-files: {})
+└── application-prod.yaml               # Prod overrides (no defaults, log-files from env vars, actuator enabled)
 ```
