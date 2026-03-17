@@ -91,7 +91,7 @@ Stateless `@Component`. Single entry point: `matches(LogEvent, ClientFilter) →
 2. **Path** — exact match on `event.path()`
 3. **Time range** — `1m`, `5m`, `15m`, `1h` → compute cutoff from `System.currentTimeMillis()`, parse event timestamp, reject if older
 4. **Text search** — if `regex`: compile pattern (cached in `ConcurrentHashMap<String, Pattern>`), match against `message`; else: case-insensitive `contains` on `message`
-5. **Keywords** — each term checked case-insensitive against `message + serverName + path`; AND mode = all must match, OR mode = any must match
+5. **Keywords** — each term checked case-insensitive against `message` only; AND mode = all must match, OR mode = any must match
 
 ### Safety limits
 - Regex patterns capped at 512 chars (`MAX_REGEX_LENGTH`) — prevents ReDoS
@@ -179,9 +179,9 @@ record LogEvent(String serverName, String path, String topic, String timestamp, 
 ### `ClientFilter` (Java record)
 ```java
 record ClientFilter(String server, String path, String search, boolean regex,
-                    List<String> keywordTerms, String keywordMode, String timeRange)
+                    List<String> keywordTerms, String keywordMode, String timeRange, long timeRangeMs)
 
-static EMPTY = new ClientFilter(null, null, null, false, List.of(), "or", "all")
+static EMPTY = new ClientFilter(null, null, null, false, List.of(), "or", "all", 0)
 
 // Convenience: hasServer(), hasPath(), hasSearch(), hasKeywords(), hasTimeRange(), isEmpty()
 ```
