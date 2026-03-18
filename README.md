@@ -9,7 +9,7 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched)  →  We
 ```
 
 1. Kafka consumer subscribes to configured topics and enqueues events
-2. Every ~100ms, the broadcast service flushes the queue — each event is evaluated against per-session **topic subscriptions** and **filters** (server, path, text search, regex, keywords, time range)
+2. Every ~100ms, the broadcast service flushes the queue — each event is evaluated against per-session **topic subscriptions** and **filters** (server, path, text search, keywords, time range)
 3. Only matching events are sent as a **batched JSON array** (or single object) per session per flush
 4. On connection, the client receives the list of available topics, then live log events that pass its filters
 
@@ -19,7 +19,7 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched)  →  We
 
 **Message 1 — sent immediately on connect (topic list):**
 ```json
-["server-topic", "system-topic", "app1-topic"]
+{ "type": "topics", "topics": ["server-topic", "system-topic", "app1-topic"] }
 ```
 
 **Message 2..N — live log events (filtered per session, single or batched):**
@@ -41,6 +41,12 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched)  →  We
 ]
 ```
 
+**Server → Client — periodic stats (every ~2s, sent to all sessions):**
+```json
+{ "type": "stats", "topics": { "app1-topic": { "rate": 12, "servers": ["web-01", "web-02"] } }, "intervalMs": 2000 }
+```
+Used by the client to display per-topic log rates and active servers in the sidebar.
+
 **Client → Server — subscribe to topics:**
 ```json
 { "action": "subscribe", "topics": ["app1-topic", "app2-topic"] }
@@ -54,7 +60,6 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched)  →  We
     "server": "web-01",
     "path": "/var/log/app.log",
     "search": "error",
-    "regex": false,
     "keywords": { "terms": ["timeout", "exception"], "mode": "or" },
     "timeRange": "15m"
   }
@@ -66,11 +71,6 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched)  →  We
 { "action": "clear-filters" }
 ```
 
-**Server → Client — filter acknowledgment:**
-```json
-{ "type": "filter-ack", "filters": { ... }, "regexError": "Unclosed group" }
-```
-The `regexError` field is only present when `regex` is `true` and the pattern is invalid.
 
 ## Tech Stack
 
