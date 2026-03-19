@@ -4,7 +4,6 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
-import java.util.Map;
 
 @Component
 @ConfigurationProperties(prefix = "logstream")
@@ -12,7 +11,7 @@ public class LogstreamProperties {
 
     private List<String> topics;
     private List<String> allowedOrigins;
-    private Map<String, String> logFiles;
+    private String logDir;
 
     public List<String> getTopics() {
         return topics;
@@ -30,11 +29,11 @@ public class LogstreamProperties {
         this.allowedOrigins = allowedOrigins;
     }
 
-    public Map<String, String> getLogFiles() {
-        return logFiles;
+    public String getLogDir() {
+        return logDir;
     }
 
-    public void setLogFiles(Map<String, String> logFiles) {
-        this.logFiles = logFiles;
+    public void setLogDir(String logDir) {
+        this.logDir = logDir;
     }
 }

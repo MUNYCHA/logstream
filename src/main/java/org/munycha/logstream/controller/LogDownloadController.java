@@ -26,16 +26,16 @@ public class LogDownloadController {
 
     @GetMapping("/download")
     public void download(@RequestParam String topic, HttpServletResponse response) throws IOException {
-        String filePath = properties.getLogFiles() != null ? properties.getLogFiles().get(topic) : null;
+        String logDir = properties.getLogDir();
 
-        if (filePath == null) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "No log file configured for topic: " + topic);
+        if (logDir == null || logDir.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Log directory not configured");
         }
 
-        Path path = Paths.get(filePath);
+        Path path = Paths.get(logDir, topic + ".log");
 
         if (!Files.exists(path)) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Log file not found: " + filePath);
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Log file not found: " + path);
         }
 
         String filename = path.getFileName().toString();

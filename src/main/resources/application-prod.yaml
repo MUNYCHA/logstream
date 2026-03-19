@@ -26,6 +26,7 @@ spring:
 logstream:
   topics: ${LOGSTREAM_TOPICS}
   allowed-origins: ${LOGSTREAM_ALLOWED_ORIGINS}
+  log-dir: ${LOGSTREAM_LOG_DIR}
 
 management:
   endpoints:
