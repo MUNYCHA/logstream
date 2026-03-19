@@ -122,8 +122,7 @@ All config is externalized via environment variables with sensible dev defaults.
 | `LOGSTREAM_TOPICS` | `server-topic,system-topic,...` | Comma-separated topics to subscribe |
 | `LOGSTREAM_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed WebSocket and REST API origin |
 | `JVM_MAX_HEAP` | `512m` | JVM max heap size (Docker only) |
-| `LOG_DIR` | `/var/log/logstream` | Host log directory mounted into container (Docker only) |
-| `LOGSTREAM_LOG_DIR` | — | Directory where log files live — can be any path, but files must be named `{topic}.log` (e.g. `server-topic` → `{dir}/server-topic.log`) |
+| `LOGSTREAM_LOG_DIR` | — | Directory where log files live — can be any path, but files must be named `{topic}.log` (e.g. `server-topic` → `{dir}/server-topic.log`). Also used as the Docker volume mount path. |
 
 ## Running Locally
 
@@ -178,7 +177,6 @@ KAFKA_MAX_POLL_RECORDS=500
 LOGSTREAM_TOPICS=server-topic,system-topic,app1-topic,app2-topic,app3-topic,app4-topic
 LOGSTREAM_ALLOWED_ORIGINS=https://myapp.com
 JVM_MAX_HEAP=512m
-LOG_DIR=/var/log/logstream
 LOGSTREAM_LOG_DIR=/var/log/logstream
 ```
 
