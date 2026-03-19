@@ -123,7 +123,7 @@ All config is externalized via environment variables with sensible dev defaults.
 | `LOGSTREAM_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed WebSocket and REST API origin |
 | `JVM_MAX_HEAP` | `512m` | JVM max heap size (Docker only) |
 | `LOG_DIR` | `/var/log/logstream` | Host log directory mounted into container (Docker only) |
-| `LOGSTREAM_LOG_DIR` | — | Directory where log files live — files must be named `{topic}.log` (e.g. `server-topic` → `server-topic.log`) |
+| `LOGSTREAM_LOG_DIR` | — | Directory where log files live — can be any path, but files must be named `{topic}.log` (e.g. `server-topic` → `{dir}/server-topic.log`) |
 
 ## Running Locally
 
