@@ -123,7 +123,7 @@ All config is externalized via environment variables with sensible dev defaults.
 | `LOGSTREAM_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed WebSocket and REST API origin |
 | `JVM_MAX_HEAP` | `512m` | JVM max heap size (Docker only) |
 | `LOG_DIR` | `/var/log/logstream` | Host log directory mounted into container (Docker only) |
-| `LOGSTREAM_LOG_FILES_<TOPIC>` | — | Full path to log file for each topic (e.g. `LOGSTREAM_LOG_FILES_SERVER_TOPIC=/var/log/logstream/server.log`) |
+| `SPRING_APPLICATION_JSON` | — | JSON map of topic → log file path (e.g. `{"logstream":{"log-files":{"server-topic":"/var/log/logstream/server.log"}}}`) — add/remove topics here without editing any yaml |
 
 ## Running Locally
 
@@ -149,6 +149,7 @@ KAFKA_BOOTSTRAP_SERVERS=192.168.1.10:9092 ./mvnw spring-boot:run
 KAFKA_BOOTSTRAP_SERVERS=prod-broker:9092 \
 LOGSTREAM_TOPICS=server-topic,system-topic,app1-topic \
 LOGSTREAM_ALLOWED_ORIGINS=https://myapp.com \
+SPRING_APPLICATION_JSON='{"logstream":{"log-files":{"server-topic":"/var/log/server.log","app1-topic":"/var/log/app1.log"}}}' \
 java -jar target/logstream-0.0.1-SNAPSHOT.jar --spring.profiles.active=prod
 ```
 
@@ -178,12 +179,7 @@ LOGSTREAM_TOPICS=server-topic,system-topic,app1-topic,app2-topic,app3-topic,app4
 LOGSTREAM_ALLOWED_ORIGINS=https://myapp.com
 JVM_MAX_HEAP=512m
 LOG_DIR=/var/log/logstream
-LOGSTREAM_LOG_FILES_SERVER_TOPIC=/var/log/logstream/server.log
-LOGSTREAM_LOG_FILES_SYSTEM_TOPIC=/var/log/logstream/system.log
-LOGSTREAM_LOG_FILES_APP1_TOPIC=/var/log/logstream/app1.log
-LOGSTREAM_LOG_FILES_APP2_TOPIC=/var/log/logstream/app2.log
-LOGSTREAM_LOG_FILES_APP3_TOPIC=/var/log/logstream/app3.log
-LOGSTREAM_LOG_FILES_APP4_TOPIC=/var/log/logstream/app4.log
+SPRING_APPLICATION_JSON={"logstream":{"log-files":{"server-topic":"/var/log/logstream/server.log","system-topic":"/var/log/logstream/system.log","app1-topic":"/var/log/logstream/app1.log","app2-topic":"/var/log/logstream/app2.log","app3-topic":"/var/log/logstream/app3.log","app4-topic":"/var/log/logstream/app4.log"}}}
 ```
 
 **3. Run**
