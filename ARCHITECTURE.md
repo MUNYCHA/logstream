@@ -90,16 +90,8 @@ Stateless `@Component`. Single entry point: `matches(LogEvent, ClientFilter) →
 1. **Server** — exact match on `event.serverName()`
 2. **Path** — exact match on `event.path()`
 3. **Time range** — `1m`, `5m`, `15m`, `1h` → compute cutoff from `System.currentTimeMillis()`, parse event timestamp, reject if older
-4. **Text search** — if `regex`: compile pattern (cached in `ConcurrentHashMap<String, Pattern>`), match against `message`; else: case-insensitive `contains` on `message`
+4. **Text search** — case-insensitive `contains` on `message`
 5. **Keywords** — each term checked case-insensitive against `message` only; AND mode = all must match, OR mode = any must match
-
-### Safety limits
-- Regex patterns capped at 512 chars (`MAX_REGEX_LENGTH`) — prevents ReDoS
-- Invalid regex → `matches()` returns `false` (drops event)
-- Regex cache: `ConcurrentHashMap<String, Pattern>` — compiled once, reused
-
-### `validateRegex(String pattern) → String|null`
-Returns error message string if pattern is invalid, `null` if valid. Used by `LogWebSocketHandler` to send `regexError` in filter-ack.
 
 ## Session Registry (`WebSocketSessionRegistry`)
 

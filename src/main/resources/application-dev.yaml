@@ -1,0 +1,17 @@
+server:
+  port: 8080
+
+spring:
+  config:
+    activate:
+      on-profile: dev
+  kafka:
+    bootstrap-servers: 172.27.12.202:9092
+    consumer:
+      group-id: log-dashboard
+      max-poll-records: 500
+
+logstream:
+  topics: server-topic,system-topic,app1-topic,app2-topic,app3-topic,app4-topic
+  allowed-origins: http://localhost:5173
+  log-dir: # set to local log directory if testing file download

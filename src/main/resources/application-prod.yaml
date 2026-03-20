@@ -2,26 +2,14 @@ server:
   port: ${SERVER_PORT:8080}
 
 spring:
+  config:
+    activate:
+      on-profile: prod
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
-
     consumer:
       group-id: ${KAFKA_CONSUMER_GROUP_ID:log-dashboard}
-      auto-offset-reset: latest
       max-poll-records: ${KAFKA_MAX_POLL_RECORDS:500}
-      fetch-min-size: 1
-      fetch-max-wait: 200ms
-
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
-
-      properties:
-        spring.json.trusted.packages: org.munycha.logstream.model
-        spring.json.use.type.headers: false
-        spring.json.value.default.type: org.munycha.logstream.model.LogEvent
-
-    listener:
-      type: batch
 
 logstream:
   topics: ${LOGSTREAM_TOPICS}
@@ -32,7 +20,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health
   endpoint:
     health:
-      show-details: always
+      show-details: never

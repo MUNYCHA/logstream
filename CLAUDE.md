@@ -13,7 +13,7 @@ Logstream is a real-time log streaming server. Kafka → WebSocket. Also exposes
 ```bash
 ./mvnw clean package              # with tests
 ./mvnw clean package -DskipTests  # skip tests
-./mvnw spring-boot:run            # dev (uses application.yaml defaults)
+./mvnw spring-boot:run -Dspring-boot.run.profiles=dev  # dev
 ./mvnw test                       # all tests
 ./mvnw test -Dtest=Class#method   # single test
 docker-compose up -d              # Docker (requires .env)
@@ -29,15 +29,15 @@ Java 17, Spring Boot 3.5.x, Maven 3.9.x (wrapper), Spring WebSocket (native Text
 config/AsyncConfig          @EnableAsync + @EnableScheduling, ThreadPoolTaskExecutor (4-8 threads, 10k queue)
 config/WebSocketConfig      /ws/logs endpoint, CORS, 512KB buffer, 5s send timeout, 5min idle
 config/CorsConfig           HTTP CORS — allows GET /api/** from configured allowed origins
-config/LogstreamProperties  @ConfigurationProperties: topics, allowedOrigins, logFiles (topic → file path map)
+config/LogstreamProperties  @ConfigurationProperties: topics, allowedOrigins, logDir (log directory path)
 controller/LogDownloadController  GET /api/logs/download?topic=X — streams log file to browser
 kafka/KafkaLogConsumer      Batch @KafkaListener (up to 500/poll), enqueues to broadcast service
 service/LogBroadcastService Queue + @Scheduled(100ms) flush, per-session filter + backpressure (500 pending)
-filter/LogFilterEngine      Stateless: server/path exact, time range, substring/regex search, keyword AND/OR
+filter/LogFilterEngine      Stateless: server/path exact, time range, substring search, keyword AND/OR
 websocket/LogWebSocketHandler   subscribe/filter/clear-filters actions, 100ms throttle, filter-ack response
 websocket/WebSocketSessionRegistry  ConcurrentHashMap store: sessions, subscriptions, per-session filters
 model/LogEvent              Record: serverName, path, topic, timestamp, message
-model/ClientFilter          Record: server, path, search, regex, keywordTerms, keywordMode, timeRange + EMPTY constant
+model/ClientFilter          Record: server, path, search, keywordTerms, keywordMode, timeRange, timeRangeMs + EMPTY constant
 ```
 
 ## Threading Model
@@ -52,8 +52,7 @@ model/ClientFilter          Record: server, path, search, regex, keywordTerms, k
 - **Broadcast is batched**: `broadcast()` MUST only enqueue. NEVER send directly from Kafka thread (blocks consumer)
 - **Flush interval**: 100ms — sends matched events as JSON array (2+ events) or single object (1 event)
 - **Backpressure**: Atomic CAS on per-session pending counter. Drop at 500. NEVER block the flush thread waiting for a slow client
-- **Filter engine is stateless**: No per-call allocations except regex cache (`ConcurrentHashMap<String, Pattern>`)
-- **Regex safety**: 512-char max pattern length. Invalid regex → drop event (return false)
+- **Filter engine is stateless**: No per-call allocations except keyword lowercasing (already normalized in ClientFilter.sanitize())
 - **Session send**: MUST be `synchronized(session)` — WebSocket is not thread-safe
 
 ## WS Protocol
@@ -63,11 +62,11 @@ Server → Client:
   Connect:    string[]                                          (topic list, once)
   Streaming:  { serverName, path, topic, timestamp, message }   (single event)
          or:  [{...}, {...}, ...]                               (batched array, every ~100ms)
-  Filter ack: { type: "filter-ack", filters: {...}, regexError?: "..." }
+  Filter ack: { type: "filter-ack", filters: {...} }
 
 Client → Server:
   Subscribe:     { action: "subscribe", topics: [...] }
-  Filter:        { action: "filter", filters: { server, path, search, regex, keywords: { terms, mode }, timeRange } }
+  Filter:        { action: "filter", filters: { server, path, search, keywords: { terms, mode }, timeRange } }
   Clear filters: { action: "clear-filters" }
 ```
 
@@ -85,8 +84,7 @@ Default: `application.yaml`. Production: `application-prod.yaml` (requires all e
 | `SERVER_PORT` | `8080` | App port |
 | `HOST_PORT` | `8080` | Docker host port |
 | `JVM_MAX_HEAP` | `512m` | JVM heap (Docker only) |
-| `LOG_DIR` | `/var/log/logstream` | Host log directory mounted into container |
-| `LOGSTREAM_LOG_FILES_<TOPIC>` | — | Full path to log file for each topic (e.g. `LOGSTREAM_LOG_FILES_SERVER_TOPIC`) |
+| `LOGSTREAM_LOG_DIR` | — | Directory containing log files; each topic expects `{topic}.log` inside |
 
 ## Branches
 
