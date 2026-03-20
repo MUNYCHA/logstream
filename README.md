@@ -9,7 +9,7 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched)  →  We
 ```
 
 1. Kafka consumer subscribes to configured topics and enqueues events
-2. Every ~100ms, the broadcast service flushes the queue — each event is evaluated against per-session **topic subscriptions** and **filters** (server, path, text search, regex, keywords, time range)
+2. Every ~100ms, the broadcast service flushes the queue — each event is evaluated against per-session **topic subscriptions** and **filters** (server, path, text search, keywords, time range)
 3. Only matching events are sent as a **batched JSON array** (or single object) per session per flush
 4. On connection, the client receives the list of available topics, then live log events that pass its filters
 
@@ -54,7 +54,6 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched)  →  We
     "server": "web-01",
     "path": "/var/log/app.log",
     "search": "error",
-    "regex": false,
     "keywords": { "terms": ["timeout", "exception"], "mode": "or" },
     "timeRange": "15m"
   }
@@ -68,9 +67,8 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched)  →  We
 
 **Server → Client — filter acknowledgment:**
 ```json
-{ "type": "filter-ack", "filters": { ... }, "regexError": "Unclosed group" }
+{ "type": "filter-ack", "filters": { ... } }
 ```
-The `regexError` field is only present when `regex` is `true` and the pattern is invalid.
 
 ## Tech Stack
 
@@ -129,11 +127,11 @@ All config is externalized via environment variables with sensible dev defaults.
 **Prerequisites:** Java 17, a running Kafka broker
 
 ```bash
-# Dev (uses application.yaml defaults)
-./mvnw spring-boot:run
+# Dev profile (uses application-dev.yaml defaults)
+./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
 
 # Dev with custom Kafka broker
-KAFKA_BOOTSTRAP_SERVERS=192.168.1.10:9092 ./mvnw spring-boot:run
+KAFKA_BOOTSTRAP_SERVERS=192.168.1.10:9092 ./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 
 ## Building & Deploying

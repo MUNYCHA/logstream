@@ -170,10 +170,10 @@ record LogEvent(String serverName, String path, String topic, String timestamp, 
 
 ### `ClientFilter` (Java record)
 ```java
-record ClientFilter(String server, String path, String search, boolean regex,
+record ClientFilter(String server, String path, String search,
                     List<String> keywordTerms, String keywordMode, String timeRange, long timeRangeMs)
 
-static EMPTY = new ClientFilter(null, null, null, false, List.of(), "or", "all", 0)
+static EMPTY = new ClientFilter(null, null, null, List.of(), "or", "all", 0)
 
 // Convenience: hasServer(), hasPath(), hasSearch(), hasKeywords(), hasTimeRange(), isEmpty()
 ```
@@ -184,11 +184,11 @@ Server → Client:
   Topic list:    ["topic1", "topic2"]                           (once on connect)
   Single event:  { serverName, path, topic, timestamp, message }
   Batched:       [{ ... }, { ... }, ...]                        (every ~100ms)
-  Filter ack:    { type: "filter-ack", filters: {...}, regexError?: "..." }
+  Filter ack:    { type: "filter-ack", filters: {...} }
 
 Client → Server:
   Subscribe:     { action: "subscribe", topics: [...] }
-  Filter:        { action: "filter", filters: { server, path, search, regex, keywords: { terms, mode }, timeRange } }
+  Filter:        { action: "filter", filters: { server, path, search, keywords: { terms, mode }, timeRange } }
   Clear:         { action: "clear-filters" }
 ```
 
@@ -200,12 +200,12 @@ src/main/java/org/munycha/logstream/
 ├── config/
 │   ├── AsyncConfig.java                # @EnableAsync + @EnableScheduling, ThreadPoolTaskExecutor
 │   ├── CorsConfig.java                 # HTTP CORS — allows GET /api/** from allowed origins
-│   ├── LogstreamProperties.java        # @ConfigurationProperties: topics, allowedOrigins, logFiles
+│   ├── LogstreamProperties.java        # @ConfigurationProperties: topics, allowedOrigins, logDir
 │   └── WebSocketConfig.java            # /ws/logs endpoint, CORS, container limits
 ├── controller/
 │   └── LogDownloadController.java      # GET /api/logs/download?topic=X — streams log file to browser
 ├── filter/
-│   └── LogFilterEngine.java            # Stateless filter: server/path/time/search/regex/keywords
+│   └── LogFilterEngine.java            # Stateless filter: server/path/time/search/keywords
 ├── kafka/
 │   └── KafkaLogConsumer.java           # Batch @KafkaListener, enqueues to broadcast service
 ├── model/
@@ -218,6 +218,7 @@ src/main/java/org/munycha/logstream/
     └── WebSocketSessionRegistry.java   # ConcurrentHashMap session store + subscriptions + filters
 
 src/main/resources/
-├── application.yaml                    # Dev defaults (Kafka, topics, CORS, log-files: {})
-└── application-prod.yaml               # Prod overrides (no defaults, log-files from env vars, actuator enabled)
+├── application.yaml                    # Base config (always loaded): app name, Kafka consumer settings, lifecycle
+├── application-dev.yaml                # Dev profile: hardcoded Kafka broker, topics, CORS, optional log-dir
+└── application-prod.yaml               # Prod profile: all values from env vars, actuator health endpoint
 ```
