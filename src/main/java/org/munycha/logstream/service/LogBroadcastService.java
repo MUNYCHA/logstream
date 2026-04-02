@@ -39,6 +39,7 @@ public class LogBroadcastService {
     private final WebSocketSessionRegistry sessionRegistry;
     private final ObjectMapper objectMapper;
     private final LogFilterEngine filterEngine;
+    private final TopicMetaStore metaStore;
 
     /** Per-topic event count accumulator for stats broadcast. */
     private final AtomicReference<ConcurrentHashMap<String, LongAdder>> statsCounters =
@@ -57,10 +58,12 @@ public class LogBroadcastService {
 
     public LogBroadcastService(WebSocketSessionRegistry sessionRegistry,
                                ObjectMapper objectMapper,
-                               LogFilterEngine filterEngine) {
+                               LogFilterEngine filterEngine,
+                               TopicMetaStore metaStore) {
         this.sessionRegistry = sessionRegistry;
         this.objectMapper = objectMapper;
         this.filterEngine = filterEngine;
+        this.metaStore = metaStore;
         sessionRegistry.onRemove(this::onSessionRemoved);
     }
 
@@ -116,6 +119,7 @@ public class LogBroadcastService {
             statsServers.get()
                     .computeIfAbsent(evt.topic(), k -> ConcurrentHashMap.newKeySet())
                     .add(evt.serverName());
+            metaStore.record(evt);
         }
 
         try {
