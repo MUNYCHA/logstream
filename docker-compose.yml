@@ -14,6 +14,8 @@ services:
       LOGSTREAM_ALLOWED_ORIGINS: ${LOGSTREAM_ALLOWED_ORIGINS}
       LOGSTREAM_LOG_DIR: ${LOGSTREAM_LOG_DIR}
       JVM_MAX_HEAP: ${JVM_MAX_HEAP:-512m}
+      LOGGING_LEVEL_ROOT: WARN
+      LOGGING_LEVEL_ORG_MUNYCHA_LOGSTREAM: INFO
     deploy:
       resources:
         limits:
@@ -22,4 +24,9 @@ services:
         reservations:
           memory: 384m
           cpus: "0.5"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
     restart: unless-stopped
