@@ -1,8 +1,8 @@
 services:
   logstream:
     build: .
-    ports:
-      - "${HOST_PORT:-8080}:8080"
+    expose:
+      - "8080"
     volumes:
       - ${LOGSTREAM_LOG_DIR}:${LOGSTREAM_LOG_DIR}:ro
     environment:
@@ -30,3 +30,9 @@ services:
         max-size: "50m"
         max-file: "5"
     restart: unless-stopped
+    networks:
+      - monitoring
+
+networks:
+  monitoring:
+    external: true
