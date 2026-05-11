@@ -11,7 +11,7 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched)  →  We
 1. Kafka consumer subscribes to configured topics and enqueues events
 2. Every ~100ms, the broadcast service flushes the queue — each event is evaluated against per-session **topic subscriptions** and **filters** (server, path, text search, keywords, time range)
 3. Only matching events are sent as a **batched JSON array** (or single object) per session per flush
-4. On connection, the client receives the list of available topics, then live log events that pass its filters
+4. On connection, the client receives the list of available topics. Live logs are sent only after the client subscribes to one or more topics.
 
 ## WebSocket API
 
@@ -19,7 +19,10 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched)  →  We
 
 **Message 1 — sent immediately on connect (topic list):**
 ```json
-["server-topic", "system-topic", "app1-topic"]
+{
+  "type": "topics",
+  "topics": ["server-topic", "system-topic", "app1-topic"]
+}
 ```
 
 **Message 2..N — live log events (filtered per session, single or batched):**
@@ -28,7 +31,7 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched)  →  We
   "serverName": "web-01",
   "path": "/var/log/app.log",
   "topic": "app1-topic",
-  "timestamp": "2026-03-07T10:00:00",
+  "timestamp": "2026-03-07T10:00:00Z",
   "message": "Started application in 1.2 seconds"
 }
 ```
@@ -70,6 +73,22 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched)  →  We
 { "type": "filter-ack", "filters": { ... } }
 ```
 
+**Server -> Client - subscribed topic stats, every ~2 seconds when data is available:**
+```json
+{
+  "type": "stats",
+  "topics": {
+    "app1-topic": {
+      "rate": 42,
+      "servers": ["web-01", "web-02"]
+    }
+  },
+  "intervalMs": 2000
+}
+```
+
+Timestamps should be ISO-8601 instants such as `2026-03-07T10:00:00Z`. Offset timestamps are supported, and local date-times are interpreted in the server timezone. Malformed timestamps are rejected when a time-range filter is active.
+
 ## Tech Stack
 
 | | |
@@ -102,7 +121,7 @@ src/main/java/org/munycha/logstream/
 ├── service/
 │   └── LogBroadcastService.java   # Batched broadcast (100ms flush) with per-session backpressure (500 pending max)
 └── websocket/
-    ├── LogWebSocketHandler.java      # Connection lifecycle + subscribe/filter/clear-filters + throttle
+    ├── LogWebSocketHandler.java      # Connection lifecycle + subscribe/filter/clear-filters + filter-ack
     └── WebSocketSessionRegistry.java # Tracks sessions, subscriptions, and per-session filters
 ```
 
@@ -119,6 +138,7 @@ All config is externalized via environment variables with sensible dev defaults.
 | `KAFKA_MAX_POLL_RECORDS` | `500` | Max Kafka records per batch poll |
 | `LOGSTREAM_TOPICS` | `server-topic,system-topic,...` | Comma-separated topics to subscribe |
 | `LOGSTREAM_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed WebSocket and REST API origin |
+| `LOGSTREAM_AUTH_TOKEN` | — | Optional shared token. When set, REST requests and WebSocket handshakes must send `X-Logstream-Token`, `Authorization: Bearer ...`, or `?token=...`. |
 | `JVM_MAX_HEAP` | `512m` | JVM max heap size (Docker only) |
 | `LOGSTREAM_LOG_DIR` | — | Directory where log files live — can be any path, but files must be named `{topic}.log` (e.g. `server-topic` → `{dir}/server-topic.log`). Also used as the Docker volume mount path. |
 
@@ -174,6 +194,7 @@ KAFKA_CONSUMER_GROUP_ID=log-dashboard
 KAFKA_MAX_POLL_RECORDS=500
 LOGSTREAM_TOPICS=server-topic,system-topic,app1-topic,app2-topic,app3-topic,app4-topic
 LOGSTREAM_ALLOWED_ORIGINS=https://myapp.com
+LOGSTREAM_AUTH_TOKEN=replace-with-a-secret
 JVM_MAX_HEAP=512m
 LOGSTREAM_LOG_DIR=/var/log/logstream
 ```
@@ -183,7 +204,7 @@ LOGSTREAM_LOG_DIR=/var/log/logstream
 docker-compose up -d
 ```
 
-App is now running on port `8080`.
+The container exposes port `8080` only to the Docker `monitoring` network. Attach a reverse proxy on that network, or add a local `ports` mapping when testing directly from the host.
 
 **Useful commands:**
 ```bash

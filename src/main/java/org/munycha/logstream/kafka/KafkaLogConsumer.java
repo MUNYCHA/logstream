@@ -1,5 +1,6 @@
 package org.munycha.logstream.kafka;
 
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.munycha.logstream.model.LogEvent;
 import org.munycha.logstream.service.LogBroadcastService;
 import org.slf4j.Logger;
@@ -24,10 +25,15 @@ public class KafkaLogConsumer {
             topics = "#{'${logstream.topics}'.split(',')}",
             groupId = "${spring.kafka.consumer.group-id}"
     )
-    public void consume(List<LogEvent> events) {
-        log.debug("Received batch of {} log events", events.size());
-        for (LogEvent event : events) {
-            broadcastService.broadcast(event);
+    public void consume(List<ConsumerRecord<String, LogEvent>> records) {
+        log.debug("Received batch of {} log records", records.size());
+        for (ConsumerRecord<String, LogEvent> record : records) {
+            LogEvent event = record.value();
+            if (event == null) {
+                log.debug("Dropping null log event from topic {}", record.topic());
+                continue;
+            }
+            broadcastService.broadcast(event.withTopic(record.topic()));
         }
     }
 }

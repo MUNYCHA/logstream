@@ -3,8 +3,8 @@ package org.munycha.logstream.websocket;
 import org.munycha.logstream.model.ClientFilter;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorator;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -14,7 +14,10 @@ import java.util.function.Consumer;
 @Component
 public class WebSocketSessionRegistry {
 
-    private final Set<WebSocketSession> sessions = ConcurrentHashMap.newKeySet();
+    private static final int SEND_TIME_LIMIT_MS = 5_000;
+    private static final int BUFFER_SIZE_LIMIT_BYTES = 512 * 1024;
+
+    private final ConcurrentHashMap<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Set<String>> subscriptions = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, ClientFilter> filters = new ConcurrentHashMap<>();
     private final List<Consumer<String>> removeListeners = new CopyOnWriteArrayList<>();
@@ -24,13 +27,19 @@ public class WebSocketSessionRegistry {
         removeListeners.add(listener);
     }
 
-    public void add(WebSocketSession session) {
-        sessions.add(session);
+    public WebSocketSession add(WebSocketSession session) {
+        WebSocketSession decorated = new ConcurrentWebSocketSessionDecorator(
+                session,
+                SEND_TIME_LIMIT_MS,
+                BUFFER_SIZE_LIMIT_BYTES
+        );
+        sessions.put(session.getId(), decorated);
+        return decorated;
     }
 
     public void remove(WebSocketSession session) {
-        sessions.remove(session);
         String id = session.getId();
+        sessions.remove(id);
         subscriptions.remove(id);
         filters.remove(id);
         removeListeners.forEach(l -> l.accept(id));
@@ -63,13 +72,17 @@ public class WebSocketSessionRegistry {
         return filters.getOrDefault(session.getId(), ClientFilter.EMPTY);
     }
 
+    public WebSocketSession resolve(WebSocketSession session) {
+        return sessions.getOrDefault(session.getId(), session);
+    }
+
     public void forEach(Consumer<WebSocketSession> action) {
-        sessions.stream()
+        sessions.values().stream()
                 .filter(WebSocketSession::isOpen)
                 .forEach(action);
     }
 
     public int activeCount() {
-        return (int) sessions.stream().filter(WebSocketSession::isOpen).count();
+        return (int) sessions.values().stream().filter(WebSocketSession::isOpen).count();
     }
 }

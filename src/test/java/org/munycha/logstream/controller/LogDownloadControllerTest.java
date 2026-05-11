@@ -5,9 +5,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
+import org.munycha.logstream.config.AuthConfig;
+import org.munycha.logstream.config.AuthInterceptor;
 import org.munycha.logstream.config.LogstreamProperties;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -23,6 +26,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(LogDownloadController.class)
+@Import({AuthConfig.class, AuthInterceptor.class})
 class LogDownloadControllerTest {
 
     @Autowired
@@ -77,6 +81,27 @@ class LogDownloadControllerTest {
         mockMvc.perform(get("/api/logs/download").param("topic", "server-topic"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(""));
+    }
+
+    @Test
+    void download_authEnabledAndMissingToken_returns401() throws Exception {
+        when(properties.isAuthEnabled()).thenReturn(true);
+
+        mockMvc.perform(get("/api/logs/download").param("topic", "server-topic"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void download_authEnabledAndValidToken_returns200() throws Exception {
+        Files.writeString(logDir.resolve("server-topic.log"), "secure\n");
+        when(properties.isAuthEnabled()).thenReturn(true);
+        when(properties.matchesAuthToken("secret")).thenReturn(true);
+
+        mockMvc.perform(get("/api/logs/download")
+                        .param("topic", "server-topic")
+                        .header("X-Logstream-Token", "secret"))
+                .andExpect(status().isOk())
+                .andExpect(content().string("secure\n"));
     }
 
     // -------------------------------------------------------------------------

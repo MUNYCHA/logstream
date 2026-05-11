@@ -8,8 +8,13 @@ import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Stateless engine that evaluates whether a LogEvent passes a ClientFilter.
@@ -61,27 +66,53 @@ public class LogFilterEngine {
                 ? (filter.timeRangeMs() > 0 ? Duration.ofMillis(filter.timeRangeMs()) : null)
                 : TIME_RANGES.get(filter.timeRange());
         if (window == null) return true;
-        try {
-            Instant eventTime = Instant.parse(event.timestamp());
-            return eventTime.isAfter(Instant.now().minus(window));
-        } catch (Exception e) {
-            log.warn("Unparseable timestamp '{}' in event from server '{}' — letting event through",
+        Optional<Instant> eventTime = parseTimestamp(event.timestamp());
+        if (eventTime.isEmpty()) {
+            log.warn("Unparseable timestamp '{}' in event from server '{}' — rejecting for active time filter",
                     event.timestamp(), event.serverName());
-            return true;
+            return false;
         }
+        return eventTime.get().isAfter(Instant.now().minus(window));
     }
 
     private boolean matchesSearch(LogEvent event, String search) {
-        return safeLower(event.message()).contains(search.toLowerCase());
+        return safeLower(event.message()).contains(search.toLowerCase(Locale.ROOT));
     }
 
     private boolean matchesKeywords(LogEvent event, List<String> terms, String mode) {
         // terms are already lowercased by ClientFilter.sanitize()
-        String haystack = nullToEmpty(event.message()).toLowerCase();
+        String haystack = safeLower(event.message());
         if ("and".equals(mode)) {
             return terms.stream().allMatch(haystack::contains);
         }
         return terms.stream().anyMatch(haystack::contains);
+    }
+
+    private Optional<Instant> parseTimestamp(String value) {
+        if (value == null || value.isBlank()) {
+            return Optional.empty();
+        }
+
+        String timestamp = value.trim();
+        try {
+            return Optional.of(Instant.parse(timestamp));
+        } catch (Exception ignored) {
+            // Try offset and local forms below.
+        }
+
+        try {
+            return Optional.of(OffsetDateTime.parse(timestamp).toInstant());
+        } catch (Exception ignored) {
+            // Try local date-time below.
+        }
+
+        try {
+            return Optional.of(LocalDateTime.parse(timestamp)
+                    .atZone(ZoneId.systemDefault())
+                    .toInstant());
+        } catch (Exception ignored) {
+            return Optional.empty();
+        }
     }
 
     private static String nullToEmpty(String value) {
@@ -89,6 +120,6 @@ public class LogFilterEngine {
     }
 
     private static String safeLower(String value) {
-        return nullToEmpty(value).toLowerCase();
+        return nullToEmpty(value).toLowerCase(Locale.ROOT);
     }
 }

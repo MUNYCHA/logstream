@@ -10,6 +10,14 @@ public record LogEvent(String serverName, String path, String topic, String time
                 && message != null;
     }
 
+    public LogEvent withTopic(String topic) {
+        return new LogEvent(serverName, path, topic, timestamp, message);
+    }
+
+    public LogEvent withMessage(String message) {
+        return new LogEvent(serverName, path, topic, timestamp, message);
+    }
+
     private static boolean hasText(String value) {
         return value != null && !value.isBlank();
     }

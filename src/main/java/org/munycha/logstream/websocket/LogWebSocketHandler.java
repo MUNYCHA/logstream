@@ -12,9 +12,13 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 @Component
 public class LogWebSocketHandler extends TextWebSocketHandler {
@@ -36,14 +40,16 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
         log.info("WebSocket connected: {} (active sessions: {})", session.getId(), sessionRegistry.activeCount() + 1);
-        sessionRegistry.add(session);
+        WebSocketSession registeredSession = sessionRegistry.add(session);
         try {
             Map<String, Object> topicMessage = new LinkedHashMap<>();
             topicMessage.put("type", "topics");
             topicMessage.put("topics", properties.getTopics());
-            session.sendMessage(new TextMessage(objectMapper.writeValueAsString(topicMessage)));
+            sendControlMessage(registeredSession, topicMessage);
         } catch (Exception e) {
             log.error("Failed to send topic list to session {}", session.getId(), e);
+            sessionRegistry.remove(session);
+            closeQuietly(session);
         }
     }
 
@@ -95,7 +101,7 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
             JsonNode terms = kw.path("terms");
             if (terms.isArray()) {
                 terms.forEach(t -> {
-                    String text = t.asText("").trim().toLowerCase();
+                    String text = t.asText("").trim().toLowerCase(Locale.ROOT);
                     if (!text.isEmpty()) keywordTerms.add(text);
                 });
             }
@@ -104,18 +110,50 @@ public class LogWebSocketHandler extends TextWebSocketHandler {
 
         ClientFilter filter = ClientFilter.sanitize(server, path, search, keywordTerms, keywordMode, timeRange, timeRangeMs);
         sessionRegistry.setFilter(session, filter);
+        sendFilterAck(session, filter);
 
         log.debug("Session {} updated filter: {}", session.getId(), filter);
     }
 
     private void handleClearFilters(WebSocketSession session) {
         sessionRegistry.setFilter(session, ClientFilter.EMPTY);
+        sendFilterAck(session, ClientFilter.EMPTY);
         log.debug("Session {} cleared filters", session.getId());
     }
 
     private static String textOrNull(JsonNode parent, String field) {
         String val = parent.path(field).asText(null);
         return (val != null && !val.isBlank()) ? val : null;
+    }
+
+    private void sendFilterAck(WebSocketSession session, ClientFilter filter) {
+        try {
+            Map<String, Object> message = new LinkedHashMap<>();
+            message.put("type", "filter-ack");
+            message.put("filters", filter);
+            sendControlMessage(sessionRegistry.resolve(session), message);
+        } catch (Exception e) {
+            log.warn("Failed to send filter ack to session {}: {}", session.getId(), e.getMessage());
+        }
+    }
+
+    private void sendControlMessage(WebSocketSession session, Map<String, Object> message) throws Exception {
+        TextMessage textMessage = new TextMessage(objectMapper.writeValueAsString(message));
+        synchronized (session) {
+            if (session.isOpen()) {
+                session.sendMessage(textMessage);
+            }
+        }
+    }
+
+    private void closeQuietly(WebSocketSession session) {
+        try {
+            if (session.isOpen()) {
+                session.close(CloseStatus.SERVER_ERROR);
+            }
+        } catch (Exception ignored) {
+            // The session is already unusable.
+        }
     }
 
     @Override

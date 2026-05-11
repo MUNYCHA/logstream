@@ -6,6 +6,7 @@ import org.munycha.logstream.model.ClientFilter;
 import org.munycha.logstream.model.LogEvent;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.stream.IntStream;
 
@@ -230,10 +231,16 @@ class LogFilterEngineTest {
     }
 
     @Test
-    void matches_unparsableTimestamp_letThrough() {
-        // Bad timestamp → warn + return true (safe default)
+    void matches_localTimestamp_recentEvent_returnsTrue() {
+        String ts = LocalDateTime.now().minusSeconds(30).toString();
+        assertTrue(engine.matches(eventWithTimestamp(ts), timeRangeFilter("1m")));
+    }
+
+    @Test
+    void matches_unparsableTimestamp_rejectedWhenTimeFilterActive() {
+        // Bad timestamp must not bypass an active time filter.
         LogEvent e = new LogEvent("web-01", "/app/app.log", "test-topic", "not-a-timestamp", "msg");
-        assertTrue(engine.matches(e, timeRangeFilter("1m")));
+        assertFalse(engine.matches(e, timeRangeFilter("1m")));
     }
 
     // -------------------------------------------------------------------------

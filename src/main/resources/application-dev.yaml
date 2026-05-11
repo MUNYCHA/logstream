@@ -15,3 +15,4 @@ logstream:
   topics: server-topic,system-topic,app1-topic,app2-topic,app3-topic,app4-topic
   allowed-origins: http://localhost:5173
   log-dir: # set to local log directory if testing file download
+  auth-token: # optional; set to require X-Logstream-Token or Authorization: Bearer

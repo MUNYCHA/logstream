@@ -1,6 +1,7 @@
 package org.munycha.logstream.model;
 
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Filter criteria sent by a WebSocket client.
@@ -45,7 +46,7 @@ public record ClientFilter(
                 ? List.of()
                 : keywordTerms.stream()
                 .filter(term -> term != null && !term.isBlank())
-                .map(term -> term.trim().toLowerCase())
+                .map(term -> term.trim().toLowerCase(Locale.ROOT))
                 .distinct()
                 .limit(20)
                 .toList();

@@ -33,6 +33,14 @@ public class LogBroadcastService {
     /** Max events to batch into a single WebSocket message. */
     private static final int MAX_BATCH_SIZE = 100;
 
+    /** Max estimated payload size for one WebSocket frame. */
+    private static final int MAX_PAYLOAD_CHARS = 384 * 1024;
+
+    /** Max characters retained from a single log message before broadcast. */
+    private static final int MAX_MESSAGE_CHARS = 64 * 1024;
+
+    private static final String TRUNCATED_SUFFIX = "... [truncated]";
+
     /** Stats broadcast interval in ms. */
     private static final long STATS_INTERVAL_MS = 2000;
 
@@ -77,11 +85,13 @@ public class LogBroadcastService {
             return;
         }
 
+        LogEvent eventToQueue = truncateIfNeeded(event);
+
         while (true) {
             int currentSize = incomingQueueSize.get();
             if (currentSize < MAX_INCOMING_QUEUE) {
                 if (incomingQueueSize.compareAndSet(currentSize, currentSize + 1)) {
-                    incomingQueue.add(event);
+                    incomingQueue.add(eventToQueue);
                     return;
                 }
                 continue;
@@ -146,14 +156,12 @@ public class LogBroadcastService {
                 }
 
                 AtomicInteger pending = sendQueue.computeIfAbsent(session.getId(), k -> new AtomicInteger(0));
-                for (int start = 0; start < matched.size(); start += MAX_BATCH_SIZE) {
-                    int end = Math.min(start + MAX_BATCH_SIZE, matched.size());
+                for (List<LogEvent> chunk : chunkForSend(matched)) {
                     if (!reserveSendSlot(session, pending)) {
                         return;
                     }
 
                     try {
-                        List<LogEvent> chunk = matched.subList(start, end);
                         String json = chunk.size() == 1
                                 ? objectMapper.writeValueAsString(chunk.get(0))
                                 : objectMapper.writeValueAsString(chunk);
@@ -170,8 +178,8 @@ public class LogBroadcastService {
     }
 
     /**
-     * Broadcasts lightweight topic stats (rates + active servers) to ALL connected sessions
-     * every 2 seconds — even those with no subscriptions. Powers sidebar metadata.
+     * Broadcasts lightweight topic stats (rates + active servers) every 2 seconds
+     * for the topics each session explicitly subscribed to.
      */
     @Scheduled(fixedDelay = STATS_INTERVAL_MS)
     public void flushStats() {
@@ -195,23 +203,83 @@ public class LogBroadcastService {
                 topicStats.put(topic, entry);
             }
 
-            Map<String, Object> message = new LinkedHashMap<>();
-            message.put("type", "stats");
-            message.put("topics", topicStats);
-            message.put("intervalMs", STATS_INTERVAL_MS);
-
-            TextMessage textMessage = new TextMessage(objectMapper.writeValueAsString(message));
-
             sessionRegistry.forEach(session -> {
-                AtomicInteger pending = sendQueue.computeIfAbsent(session.getId(), k -> new AtomicInteger(0));
-                if (!reserveSendSlot(session, pending)) {
+                Map<String, Object> visibleTopicStats = new LinkedHashMap<>();
+                topicStats.forEach((topic, stats) -> {
+                    if (sessionRegistry.isSubscribed(session, topic)) {
+                        visibleTopicStats.put(topic, stats);
+                    }
+                });
+                if (visibleTopicStats.isEmpty()) {
                     return;
                 }
-                trySend(session, textMessage, pending);
+
+                try {
+                    Map<String, Object> sessionMessage = new LinkedHashMap<>();
+                    sessionMessage.put("type", "stats");
+                    sessionMessage.put("topics", visibleTopicStats);
+                    sessionMessage.put("intervalMs", STATS_INTERVAL_MS);
+
+                    TextMessage textMessage = new TextMessage(objectMapper.writeValueAsString(sessionMessage));
+                    AtomicInteger pending = sendQueue.computeIfAbsent(session.getId(), k -> new AtomicInteger(0));
+                    if (!reserveSendSlot(session, pending)) {
+                        return;
+                    }
+                    trySend(session, textMessage, pending);
+                } catch (Exception e) {
+                    log.warn("Failed to serialize stats for session {}: {}", session.getId(), e.getMessage());
+                }
             });
         } catch (Exception e) {
             log.error("Failed to flush stats: {}", e.getMessage(), e);
         }
+    }
+
+    private LogEvent truncateIfNeeded(LogEvent event) {
+        String message = event.message();
+        if (message.length() <= MAX_MESSAGE_CHARS) {
+            return event;
+        }
+
+        int end = Math.max(0, MAX_MESSAGE_CHARS - TRUNCATED_SUFFIX.length());
+        return event.withMessage(message.substring(0, end) + TRUNCATED_SUFFIX);
+    }
+
+    private List<List<LogEvent>> chunkForSend(List<LogEvent> events) {
+        List<List<LogEvent>> chunks = new ArrayList<>();
+        List<LogEvent> current = new ArrayList<>();
+        int currentSize = 2;
+
+        for (LogEvent event : events) {
+            int eventSize = estimatePayloadSize(event);
+            boolean wouldExceedCount = current.size() >= MAX_BATCH_SIZE;
+            boolean wouldExceedSize = !current.isEmpty() && currentSize + eventSize > MAX_PAYLOAD_CHARS;
+            if (wouldExceedCount || wouldExceedSize) {
+                chunks.add(current);
+                current = new ArrayList<>();
+                currentSize = 2;
+            }
+            current.add(event);
+            currentSize += eventSize;
+        }
+
+        if (!current.isEmpty()) {
+            chunks.add(current);
+        }
+        return chunks;
+    }
+
+    private int estimatePayloadSize(LogEvent event) {
+        return 128
+                + length(event.serverName())
+                + length(event.path())
+                + length(event.topic())
+                + length(event.timestamp())
+                + length(event.message());
+    }
+
+    private int length(String value) {
+        return value == null ? 0 : value.length();
     }
 
     private boolean reserveSendSlot(WebSocketSession session, AtomicInteger pending) {

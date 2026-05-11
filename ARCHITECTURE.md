@@ -96,7 +96,7 @@ Stateless `@Component`. Single entry point: `matches(LogEvent, ClientFilter) →
 ## Session Registry (`WebSocketSessionRegistry`)
 
 ```java
-Set<WebSocketSession> sessions              // ConcurrentHashMap.newKeySet()
+Map<String, WebSocketSession> sessions      // sessionId -> ConcurrentWebSocketSessionDecorator
 Map<String, Set<String>> subscriptions      // sessionId → Set<topicName>
 Map<String, ClientFilter> filters           // sessionId → ClientFilter
 List<Consumer<String>> removeListeners      // called on session removal
@@ -105,15 +105,15 @@ List<Consumer<String>> removeListeners      // called on session removal
 ### Key methods
 | Method | Thread safety | Notes |
 |---|---|---|
-| `add(session)` | Concurrent set add | Called from Tomcat WS thread |
-| `remove(session)` | Set remove + map removes + listener callbacks | Called from WS thread or flush thread (on send failure) |
+| `add(session)` | Map put | Wraps the raw session with `ConcurrentWebSocketSessionDecorator` |
+| `remove(session)` | Map remove + map removes + listener callbacks | Called from WS thread or flush thread (on send failure) |
 | `subscribe(session, topics)` | Map put | Replaces all subscriptions |
 | `isSubscribed(session, topic)` | Map get + set contains | Hot path in flush |
-| `hasSubscriptions(session)` | Map containsKey | If false, session gets ALL topics |
+| `hasSubscriptions(session)` | Map containsKey | If false, session receives no log events until it subscribes |
 | `setFilter(session, filter)` | Map put | Called from WS handler |
 | `getFilter(session)` | Map getOrDefault(EMPTY) | Hot path in flush |
 | `forEach(consumer)` | Streams sessions, filters by isOpen() | Used by flush |
-| `activeCount()` | Set size | |
+| `activeCount()` | Map values count | |
 
 ## WebSocket Handler (`LogWebSocketHandler`)
 
@@ -121,18 +121,15 @@ List<Consumer<String>> removeListeners      // called on session removal
 | Action | Handler | Side effects |
 |---|---|---|
 | `subscribe` | `handleSubscribe` | `sessionRegistry.subscribe(session, topics)` |
-| `filter` | `handleFilter` (throttled 100ms) | `sessionRegistry.setFilter(session, filter)` + sends filter-ack |
+| `filter` | `handleFilter` | `sessionRegistry.setFilter(session, filter)` + sends filter-ack |
 | `clear-filters` | `handleClearFilters` | `sessionRegistry.setFilter(session, EMPTY)` + sends filter-ack |
 
-### Filter throttle
-Per-session throttle via `ConcurrentHashMap<String, Long> lastFilterTime`:
-- `merge(sessionId, now, (last, cur) -> (cur - last) < 100 ? last : cur)`
-- If merge kept old value → throttled, skip filter update
-- Cleaned up on disconnect
+### Filter acknowledgements
+Filter updates are applied immediately and acknowledged with `{ "type": "filter-ack", "filters": ... }`.
 
 ### Connection lifecycle
 - `afterConnectionEstablished`: register session, send topic list JSON
-- `afterConnectionClosed`: unregister session, clean up throttle map
+- `afterConnectionClosed`: unregister session and clean up per-session state
 
 ## Configuration
 
@@ -181,7 +178,7 @@ static EMPTY = new ClientFilter(null, null, null, List.of(), "or", "all", 0)
 ### Wire format (JSON)
 ```
 Server → Client:
-  Topic list:    ["topic1", "topic2"]                           (once on connect)
+  Topic list:    { type: "topics", topics: ["topic1", "topic2"] } (once on connect)
   Single event:  { serverName, path, topic, timestamp, message }
   Batched:       [{ ... }, { ... }, ...]                        (every ~100ms)
   Filter ack:    { type: "filter-ack", filters: {...} }
@@ -214,7 +211,7 @@ src/main/java/org/munycha/logstream/
 ├── service/
 │   └── LogBroadcastService.java        # Queue + @Scheduled flush + per-session backpressure
 └── websocket/
-    ├── LogWebSocketHandler.java        # subscribe/filter/clear-filters + throttle + filter-ack
+    ├── LogWebSocketHandler.java        # subscribe/filter/clear-filters + filter-ack
     └── WebSocketSessionRegistry.java   # ConcurrentHashMap session store + subscriptions + filters
 
 src/main/resources/

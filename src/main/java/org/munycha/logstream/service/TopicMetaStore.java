@@ -17,19 +17,35 @@ import java.util.concurrent.atomic.LongAdder;
 @Service
 public class TopicMetaStore {
 
+    private static final int MAX_SERVERS_PER_TOPIC = 500;
+    private static final int MAX_PATHS_PER_SERVER = 1_000;
+
     // topic → serverName → ServerMeta
     private final ConcurrentHashMap<String, ConcurrentHashMap<String, ServerMeta>> store =
             new ConcurrentHashMap<>();
 
     /** Called from LogBroadcastService flush thread for every drained event. */
     public void record(LogEvent event) {
-        ServerMeta server = store
-                .computeIfAbsent(event.topic(), t -> new ConcurrentHashMap<>())
-                .computeIfAbsent(event.serverName(), s -> new ServerMeta());
+        ConcurrentHashMap<String, ServerMeta> servers =
+                store.computeIfAbsent(event.topic(), t -> new ConcurrentHashMap<>());
+
+        ServerMeta server = servers.get(event.serverName());
+        if (server == null) {
+            if (servers.size() >= MAX_SERVERS_PER_TOPIC) {
+                return;
+            }
+            server = servers.computeIfAbsent(event.serverName(), s -> new ServerMeta());
+        }
         server.count.increment();
         server.lastSeen.set(event.timestamp());
 
-        PathMeta path = server.paths.computeIfAbsent(event.path(), p -> new PathMeta());
+        PathMeta path = server.paths.get(event.path());
+        if (path == null) {
+            if (server.paths.size() >= MAX_PATHS_PER_SERVER) {
+                return;
+            }
+            path = server.paths.computeIfAbsent(event.path(), p -> new PathMeta());
+        }
         path.count.increment();
         path.lastSeen.set(event.timestamp());
     }

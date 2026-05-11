@@ -34,7 +34,7 @@ controller/LogDownloadController  GET /api/logs/download?topic=X — streams log
 kafka/KafkaLogConsumer      Batch @KafkaListener (up to 500/poll), enqueues to broadcast service
 service/LogBroadcastService Queue + @Scheduled(100ms) flush, per-session filter + backpressure (500 pending)
 filter/LogFilterEngine      Stateless: server/path exact, time range, substring search, keyword AND/OR
-websocket/LogWebSocketHandler   subscribe/filter/clear-filters actions, 100ms throttle, filter-ack response
+websocket/LogWebSocketHandler   subscribe/filter/clear-filters actions, filter-ack response
 websocket/WebSocketSessionRegistry  ConcurrentHashMap store: sessions, subscriptions, per-session filters
 model/LogEvent              Record: serverName, path, topic, timestamp, message
 model/ClientFilter          Record: server, path, search, keywordTerms, keywordMode, timeRange, timeRangeMs + EMPTY constant
@@ -59,7 +59,7 @@ model/ClientFilter          Record: server, path, search, keywordTerms, keywordM
 
 ```
 Server → Client:
-  Connect:    string[]                                          (topic list, once)
+  Connect:    { type: "topics", topics: string[] }              (topic list, once)
   Streaming:  { serverName, path, topic, timestamp, message }   (single event)
          or:  [{...}, {...}, ...]                               (batched array, every ~100ms)
   Filter ack: { type: "filter-ack", filters: {...} }

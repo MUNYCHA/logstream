@@ -15,6 +15,7 @@ logstream:
   topics: ${LOGSTREAM_TOPICS}
   allowed-origins: ${LOGSTREAM_ALLOWED_ORIGINS}
   log-dir: ${LOGSTREAM_LOG_DIR}
+  auth-token: ${LOGSTREAM_AUTH_TOKEN:}
 
 management:
   endpoints:
