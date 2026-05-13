@@ -14,7 +14,7 @@ spring:
     oauth2:
       resourceserver:
         jwt:
-          jwk-set-uri: ${KEYCLOAK_JWKS_URI}
+          jwk-set-uri: ${SSO_JWKS_URI}
 
 logstream:
   topics: ${LOGSTREAM_TOPICS}
