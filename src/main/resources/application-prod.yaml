@@ -10,6 +10,11 @@ spring:
     consumer:
       group-id: ${KAFKA_CONSUMER_GROUP_ID:log-dashboard}
       max-poll-records: ${KAFKA_MAX_POLL_RECORDS:500}
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${KEYCLOAK_JWKS_URI}
 
 logstream:
   topics: ${LOGSTREAM_TOPICS}

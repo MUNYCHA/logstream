@@ -1,5 +1,6 @@
 package org.munycha.logstream.config;
 
+import org.munycha.logstream.websocket.JwtHandshakeInterceptor;
 import org.munycha.logstream.websocket.LogWebSocketHandler;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -14,15 +15,19 @@ public class WebSocketConfig implements WebSocketConfigurer {
 
     private final LogWebSocketHandler handler;
     private final LogstreamProperties properties;
+    private final JwtHandshakeInterceptor jwtHandshakeInterceptor;
 
-    public WebSocketConfig(LogWebSocketHandler handler, LogstreamProperties properties) {
+    public WebSocketConfig(LogWebSocketHandler handler, LogstreamProperties properties,
+                           JwtHandshakeInterceptor jwtHandshakeInterceptor) {
         this.handler = handler;
         this.properties = properties;
+        this.jwtHandshakeInterceptor = jwtHandshakeInterceptor;
     }
 
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
         registry.addHandler(handler, "/ws/logs")
+                .addInterceptors(jwtHandshakeInterceptor)
                 .setAllowedOrigins(properties.getAllowedOrigins().toArray(new String[0]));
     }
 
