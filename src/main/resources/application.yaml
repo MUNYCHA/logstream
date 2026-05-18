@@ -13,9 +13,9 @@ spring:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
       properties:
-        spring.json.trusted.packages: org.munycha.logstream.model
+        spring.json.trusted.packages: org.munycha.logstream.streaming.kafka
         spring.json.use.type.headers: false
-        spring.json.value.default.type: org.munycha.logstream.model.LogEvent
+        spring.json.value.default.type: org.munycha.logstream.streaming.kafka.LogEvent
 
     listener:
       type: batch
