@@ -1,52 +1,81 @@
 # Logstream
 
-A real-time log streaming bridge between **Kafka** and **WebSocket** clients, built with Spring Boot 3. Also exposes a REST API for downloading log files directly from the server.
+A real-time log streaming bridge between **Kafka** and **WebSocket** clients, built with Spring Boot 3. Also exposes a REST API for log file downloads and per-topic metadata, secured with JWT bearer auth.
 
 ## How It Works
 
 ```
-Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched)  →  WebSocket Clients
+Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched flush)  →  WebSocket Clients
+                                       │
+                                       ├──→ StatsAccumulator (per-topic rate + servers)
+                                       │      └──→ StatsBroadcaster (every 2s) ──→ all sessions
+                                       │
+                                       └──→ TopicMetaStore (server/path snapshots, queried via REST)
 ```
 
-1. Kafka consumer subscribes to configured topics and enqueues events
-2. Every ~100ms, the broadcast service flushes the queue — each event is evaluated against per-session **topic subscriptions** and **filters** (server, path, text search, keywords, time range)
-3. Only matching events are sent as a **batched JSON array** (or single object) per session per flush
-4. On connection, the client receives the list of available topics, then live log events that pass its filters
+1. Kafka consumer subscribes to configured topics and enqueues events (non-blocking)
+2. Every 100ms, the broadcast service flushes the queue. Each event is evaluated per session against **topic subscriptions** and **filters** (server, path, text search, keywords, time range). Matched events go out as a single JSON object or a batched array.
+3. In parallel, accumulator updates per-topic rate counters and active-server sets. Every 2s a `stats` message is fanned out to every session.
+4. On connect, the client receives a one-shot `topics` greeting listing the configured topics, then live events.
+
+## Authentication
+
+Both REST and WebSocket require a valid JWT (OAuth2 resource server).
+
+- **REST** — `Authorization: Bearer <token>` header
+- **WebSocket** — token passed as a query parameter at handshake: `wss://host/ws/logs?token=<jwt>`. Validated by `JwtHandshakeInterceptor` before the connection is upgraded; failure → `401`.
+
+The signing keys are fetched from `SSO_JWKS_URI`. `GET /actuator/health` is the only unauthenticated endpoint.
 
 ## WebSocket API
 
-**Endpoint:** `ws://localhost:8080/ws/logs`
+**Endpoint:** `ws://localhost:8080/ws/logs?token=<jwt>`
 
-**Message 1 — sent immediately on connect (topic list):**
+### Server → Client
+
+**On connect — topic list:**
 ```json
-["server-topic", "system-topic", "app1-topic"]
+{ "type": "topics", "topics": ["server-topic", "system-topic", "app1-topic"] }
 ```
 
-**Message 2..N — live log events (filtered per session, single or batched):**
+**Live log event (single):**
 ```json
 {
   "serverName": "web-01",
   "path": "/var/log/app.log",
   "topic": "app1-topic",
-  "timestamp": "2026-03-07T10:00:00",
+  "timestamp": "2026-03-07T10:00:00Z",
   "message": "Started application in 1.2 seconds"
 }
 ```
 
-**Batched (multiple events in one frame, sent every ~100ms):**
+**Live log batch (2+ events in one frame, every ~100ms):**
 ```json
 [
-  { "serverName": "web-01", "path": "/var/log/app.log", "topic": "app1-topic", "timestamp": "...", "message": "..." },
-  { "serverName": "web-02", "path": "/var/log/app.log", "topic": "app1-topic", "timestamp": "...", "message": "..." }
+  { "serverName": "web-01", "path": "...", "topic": "...", "timestamp": "...", "message": "..." },
+  { "serverName": "web-02", "path": "...", "topic": "...", "timestamp": "...", "message": "..." }
 ]
 ```
 
-**Client → Server — subscribe to topics:**
+**Stats (every 2s, sent to all sessions regardless of subscription):**
+```json
+{
+  "type": "stats",
+  "topics": {
+    "app1-topic": { "rate": 142, "servers": ["web-01", "web-02"] }
+  },
+  "intervalMs": 2000
+}
+```
+
+### Client → Server
+
+**Subscribe to topics** (required before any logs are sent):
 ```json
 { "action": "subscribe", "topics": ["app1-topic", "app2-topic"] }
 ```
 
-**Client → Server — set filters (all fields optional):**
+**Set filters** (all fields optional):
 ```json
 {
   "action": "filter",
@@ -60,14 +89,30 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched)  →  We
 }
 ```
 
-**Client → Server — clear all filters:**
+**Clear all filters:**
 ```json
 { "action": "clear-filters" }
 ```
 
-**Server → Client — filter acknowledgment:**
+## REST API
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/logs/download?topic={topic}` | Streams `{topic}.log` from `LOGSTREAM_LOG_DIR` as `text/plain`. Path-security hardened: allowlist + lexical + symlink-resolved checks. |
+| `GET` | `/api/topics/{topic}/meta` | Per-topic snapshot: each server + its paths with event counts and last-seen timestamp. 30s cache. |
+| `GET` | `/actuator/health` | Health check (prod profile only, unauthenticated). |
+
+### Error responses
+
+All errors return a consistent shape:
 ```json
-{ "type": "filter-ack", "filters": { ... } }
+{
+  "status": 404,
+  "code": "LOG_FILE_NOT_FOUND",
+  "message": "Log file not found",
+  "timestamp": "2026-05-18T11:00:00Z",
+  "path": "/api/logs/download"
+}
 ```
 
 ## Tech Stack
@@ -76,34 +121,64 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched)  →  We
 |---|---|
 | Java | 17 (Temurin LTS) |
 | Spring Boot | 3.5.x |
-| Spring WebSocket | Embedded Tomcat |
-| Spring Kafka | Kafka consumer |
+| Spring Security | OAuth2 resource server (JWT) |
+| Spring WebSocket | Native `TextWebSocketHandler` (not STOMP) |
+| Spring Kafka | Batch listener, JSON deserializer |
 | Maven | 3.9.x (via wrapper) |
 
 ## Project Structure
 
+Package-by-feature. Each top-level package is a self-contained slice of behavior.
+
 ```
 src/main/java/org/munycha/logstream/
 ├── LogstreamApplication.java
-├── config/
-│   ├── AsyncConfig.java           # @EnableAsync + @EnableScheduling, bounded ThreadPoolTaskExecutor
-│   ├── CorsConfig.java            # HTTP CORS for /api/**
-│   ├── LogstreamProperties.java   # @ConfigurationProperties binding
-│   └── WebSocketConfig.java       # WebSocket endpoint + CORS + container limits
-├── controller/
-│   └── LogDownloadController.java # GET /api/logs/download?topic=X
-├── filter/
-│   └── LogFilterEngine.java       # Stateless filter engine — evaluates LogEvent vs ClientFilter
-├── kafka/
-│   └── KafkaLogConsumer.java      # Batch Kafka listener (up to 500 records/poll)
-├── model/
-│   ├── ClientFilter.java          # Immutable per-session filter criteria record
-│   └── LogEvent.java              # Record: serverName, path, topic, timestamp, message
-├── service/
-│   └── LogBroadcastService.java   # Batched broadcast (100ms flush) with per-session backpressure (500 pending max)
-└── websocket/
-    ├── LogWebSocketHandler.java      # Connection lifecycle + subscribe/filter/clear-filters + throttle
-    └── WebSocketSessionRegistry.java # Tracks sessions, subscriptions, and per-session filters
+│
+├── common/
+│   ├── config/
+│   │   ├── AsyncConfig.java           # @EnableAsync + @EnableScheduling, bounded ThreadPoolTaskExecutor
+│   │   ├── CorsConfig.java            # HTTP CORS for /api/**
+│   │   └── LogstreamProperties.java   # @ConfigurationProperties("logstream")
+│   └── exception/
+│       ├── ApiError.java              # Uniform error response record
+│       ├── GlobalExceptionHandler.java  # @RestControllerAdvice
+│       ├── InvalidTopicException.java
+│       └── LogFileNotFoundException.java
+│
+├── security/
+│   ├── SecurityConfig.java            # Filter chain, JWT resource server
+│   └── JwtHandshakeInterceptor.java   # Validates ?token= on WS handshake
+│
+└── streaming/
+    ├── kafka/
+    │   ├── KafkaLogConsumer.java      # Batch @KafkaListener
+    │   └── LogEvent.java              # Record: serverName, path, topic, timestamp, message
+    ├── filter/
+    │   ├── LogFilterEngine.java       # Stateless filter — evaluates LogEvent vs ClientFilter
+    │   └── ClientFilter.java          # Immutable per-session filter record + sanitize()
+    ├── broadcast/
+    │   ├── LogBroadcastService.java   # Enqueue + @Scheduled(100ms) flush hot path
+    │   ├── StatsAccumulator.java      # Per-topic rate + active-server tracking
+    │   ├── StatsBroadcaster.java      # @Scheduled(2s) stats emit
+    │   └── SessionBackpressure.java   # Per-session pending counters + synchronized(session) send
+    ├── websocket/
+    │   ├── WebSocketConfig.java       # /ws/logs endpoint, container limits, handshake interceptor
+    │   ├── LogWebSocketHandler.java   # Lifecycle + action dispatch (subscribe/filter/clear-filters)
+    │   ├── WebSocketSessionRegistry.java # ConcurrentHashMap session/subscription/filter store
+    │   └── dto/
+    │       ├── WsClientMessage.java       # Sealed: Subscribe | Filter | ClearFilters
+    │       ├── ClientFilterRequest.java   # Raw inbound filter → sanitized ClientFilter
+    │       ├── TopicsListMessage.java     # Greeting payload
+    │       ├── StatsMessage.java          # Stats payload
+    │       └── TopicStat.java             # Per-topic stats entry
+    ├── download/
+    │   ├── LogDownloadController.java # GET /api/logs/download
+    │   └── LogFileResolver.java       # Allowlist + lexical + symlink-resolved path checks
+    └── topic/
+        ├── LogTopicMetaController.java  # GET /api/topics/{topic}/meta
+        ├── TopicMetaStore.java          # In-memory: topic → server → path counts
+        └── dto/
+            └── TopicMetaResponse.java   # Nested ServerEntry / PathEntry records
 ```
 
 ## Configuration
@@ -113,18 +188,19 @@ All config is externalized via environment variables with sensible dev defaults.
 | Env Var | Default | Description |
 |---|---|---|
 | `HOST_PORT` | `8080` | Host port exposed by Docker (Docker only) |
-| `SERVER_PORT` | `8080` | Spring Boot internal port (jar/spring boot run) |
+| `SERVER_PORT` | `8080` | Spring Boot internal port (jar / spring-boot:run) |
 | `KAFKA_BOOTSTRAP_SERVERS` | `172.27.12.202:9092` | Kafka broker address |
 | `KAFKA_CONSUMER_GROUP_ID` | `log-dashboard` | Kafka consumer group |
 | `KAFKA_MAX_POLL_RECORDS` | `500` | Max Kafka records per batch poll |
 | `LOGSTREAM_TOPICS` | `server-topic,system-topic,...` | Comma-separated topics to subscribe |
 | `LOGSTREAM_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed WebSocket and REST API origin |
 | `JVM_MAX_HEAP` | `512m` | JVM max heap size (Docker only) |
-| `LOGSTREAM_LOG_DIR` | — | Directory where log files live — can be any path, but files must be named `{topic}.log` (e.g. `server-topic` → `{dir}/server-topic.log`). Also used as the Docker volume mount path. |
+| `LOGSTREAM_LOG_DIR` | — | Directory containing log files. Files must be named `{topic}.log` (e.g. `server-topic` → `{dir}/server-topic.log`). |
+| `SSO_JWKS_URI` | — | JWKS endpoint for JWT validation (prod profile). |
 
 ## Running Locally
 
-**Prerequisites:** Java 17, a running Kafka broker
+**Prerequisites:** Java 17, a running Kafka broker.
 
 ```bash
 # Dev profile (uses application-dev.yaml defaults)
@@ -147,6 +223,7 @@ KAFKA_BOOTSTRAP_SERVERS=prod-broker:9092 \
 LOGSTREAM_TOPICS=server-topic,system-topic,app1-topic \
 LOGSTREAM_ALLOWED_ORIGINS=https://myapp.com \
 LOGSTREAM_LOG_DIR=/var/log/logstream \
+SSO_JWKS_URI=https://sso.example.com/.well-known/jwks.json \
 java -jar target/logstream-0.0.1-SNAPSHOT.jar --spring.profiles.active=prod
 ```
 
@@ -176,6 +253,7 @@ LOGSTREAM_TOPICS=server-topic,system-topic,app1-topic,app2-topic,app3-topic,app4
 LOGSTREAM_ALLOWED_ORIGINS=https://myapp.com
 JVM_MAX_HEAP=512m
 LOGSTREAM_LOG_DIR=/var/log/logstream
+SSO_JWKS_URI=http://keycloak:8080/auth/realms/logstream/protocol/openid-connect/certs
 ```
 
 **3. Run**
@@ -195,6 +273,14 @@ docker-compose down
 
 # pull latest code and restart
 git pull && docker-compose up -d --build
+```
+
+## Tests
+
+```bash
+./mvnw test                                    # all tests
+./mvnw test -Dtest=LogFilterEngineTest         # one class
+./mvnw test -Dtest=LogFilterEngineTest#matches_nullFilter_alwaysTrue   # one method
 ```
 
 ## Branches
