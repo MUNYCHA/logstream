@@ -11,14 +11,24 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.SubProtocolCapable;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 @Component
-public class LogWebSocketHandler extends TextWebSocketHandler {
+public class LogWebSocketHandler extends TextWebSocketHandler implements SubProtocolCapable {
+
+    @Override
+    public List<String> getSubProtocols() {
+        // Browser offers ['logstream.v1', 'bearer.<jwt>']. Spring echoes back 'logstream.v1'
+        // (the protocol the server actually advertises); the bearer entry is consumed by
+        // JwtHandshakeInterceptor and never echoed.
+        return List.of("logstream.v1");
+    }
 
     private static final Logger log = LoggerFactory.getLogger(LogWebSocketHandler.class);
 
