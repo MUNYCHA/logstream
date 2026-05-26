@@ -177,7 +177,7 @@ List<Consumer<String>> removeListeners      // notified on remove(session)
 - All other paths require a valid `Authorization: Bearer <jwt>` header.
 
 ### WebSocket (`JwtHandshakeInterceptor`)
-- Reads `?token=<jwt>` from the handshake request (browsers can't set headers on the WS handshake).
+- Reads `bearer.<jwt>` from the offered `Sec-WebSocket-Protocol` values; the client also offers `logstream.v1`, which the server selects.
 - Calls `jwtDecoder.decode(token)`; on failure → respond `401`, abort upgrade.
 - On success, stashes the `Jwt` and `subject` in the handshake attributes for downstream access.
 
@@ -313,7 +313,7 @@ src/main/java/org/munycha/logstream/
 │
 ├── security/
 │   ├── SecurityConfig.java                 # JWT resource server, filter chain
-│   └── JwtHandshakeInterceptor.java        # WS handshake ?token= validation
+│   └── JwtHandshakeInterceptor.java        # WS bearer subprotocol validation
 │
 └── streaming/
     ├── kafka/

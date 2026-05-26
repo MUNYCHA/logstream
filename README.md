@@ -23,13 +23,13 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched flush)  �
 Both REST and WebSocket require a valid JWT (OAuth2 resource server).
 
 - **REST** — `Authorization: Bearer <token>` header
-- **WebSocket** — token passed as a query parameter at handshake: `wss://host/ws/logs?token=<jwt>`. Validated by `JwtHandshakeInterceptor` before the connection is upgraded; failure → `401`.
+- **WebSocket** — token passed as the `bearer.<jwt>` WebSocket subprotocol alongside `logstream.v1`. Validated by `JwtHandshakeInterceptor` before the connection is upgraded; failure → `401`.
 
 The signing keys are fetched from `SSO_JWKS_URI`. `GET /actuator/health` is the only unauthenticated endpoint.
 
 ## WebSocket API
 
-**Endpoint:** `ws://localhost:8080/ws/logs?token=<jwt>`
+**Endpoint:** `ws://localhost:8080/ws/logs`, opened with subprotocols `["logstream.v1", "bearer.<jwt>"]`
 
 ### Server → Client
 
@@ -147,7 +147,7 @@ src/main/java/org/munycha/logstream/
 │
 ├── security/
 │   ├── SecurityConfig.java            # Filter chain, JWT resource server
-│   └── JwtHandshakeInterceptor.java   # Validates ?token= on WS handshake
+│   └── JwtHandshakeInterceptor.java   # Validates bearer JWT WS subprotocol
 │
 └── streaming/
     ├── kafka/
@@ -187,7 +187,6 @@ All config is externalized via environment variables with sensible dev defaults.
 
 | Env Var | Default | Description |
 |---|---|---|
-| `HOST_PORT` | `8080` | Host port exposed by Docker (Docker only) |
 | `SERVER_PORT` | `8080` | Spring Boot internal port (jar / spring-boot:run) |
 | `KAFKA_BOOTSTRAP_SERVERS` | `172.27.12.202:9092` | Kafka broker address |
 | `KAFKA_CONSUMER_GROUP_ID` | `log-dashboard` | Kafka consumer group |
@@ -195,7 +194,7 @@ All config is externalized via environment variables with sensible dev defaults.
 | `LOGSTREAM_TOPICS` | `server-topic,system-topic,...` | Comma-separated topics to subscribe |
 | `LOGSTREAM_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed WebSocket and REST API origin |
 | `JVM_MAX_HEAP` | `512m` | JVM max heap size (Docker only) |
-| `LOGSTREAM_LOG_DIR` | — | Directory containing log files. Files must be named `{topic}.log` (e.g. `server-topic` → `{dir}/server-topic.log`). |
+| `LOGSTREAM_LOG_DIR` | — | Directory containing download files. Files must be named `{topic}.log`, with the topic included in `LOGSTREAM_TOPICS`. |
 | `SSO_JWKS_URI` | — | JWKS endpoint for JWT validation (prod profile). |
 
 ## Running Locally
@@ -229,51 +228,14 @@ java -jar target/logstream-0.0.1-SNAPSHOT.jar --spring.profiles.active=prod
 
 The `prod` profile (`application-prod.yaml`) requires all env vars to be explicitly set — the app will refuse to start if any are missing.
 
-## Running with Docker
+## Docker Deployment
 
-**Prerequisites:** Docker installed on the server — no Java required.
+The office-server deployment is owned by the sibling `log-infra` repository. Its
+single Compose stack builds this API together with the React/nginx gateway and
+Keycloak, using `log-infra/.env` as the deployment source of truth.
 
-**1. Clone the repo**
-```bash
-git clone git@github.com:MUNYCHA/logstream.git
-cd logstream
-```
-
-**2. Create your `.env` file from the example**
-```bash
-cp .env.example .env
-```
-Then edit `.env` with your actual values:
-```env
-HOST_PORT=8080
-KAFKA_BOOTSTRAP_SERVERS=172.27.12.202:9092
-KAFKA_CONSUMER_GROUP_ID=log-dashboard
-KAFKA_MAX_POLL_RECORDS=500
-LOGSTREAM_TOPICS=server-topic,system-topic,app1-topic,app2-topic,app3-topic,app4-topic
-LOGSTREAM_ALLOWED_ORIGINS=https://myapp.com
-JVM_MAX_HEAP=512m
-LOGSTREAM_LOG_DIR=/var/log/logstream
-SSO_JWKS_URI=http://keycloak:8080/auth/realms/logstream/protocol/openid-connect/certs
-```
-
-**3. Run**
-```bash
-docker-compose up -d
-```
-
-App is now running on port `8080`.
-
-**Useful commands:**
-```bash
-# view live logs
-docker-compose logs -f
-
-# stop
-docker-compose down
-
-# pull latest code and restart
-git pull && docker-compose up -d --build
-```
+Use this repository's `docker-compose.yml` and `.env.example` only when running
+the backend container independently for development or integration testing.
 
 ## Tests
 

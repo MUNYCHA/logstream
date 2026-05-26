@@ -16,7 +16,7 @@ Logstream is a real-time log streaming server. Kafka → WebSocket. Also exposes
 ./mvnw spring-boot:run -Dspring-boot.run.profiles=dev  # dev
 ./mvnw test                       # all tests
 ./mvnw test -Dtest=Class#method   # single test
-docker-compose up -d              # Docker (requires .env)
+docker compose up -d              # standalone backend container only
 ```
 
 ## Stack
@@ -31,7 +31,7 @@ common/
   exception/      GlobalExceptionHandler, ApiError,
                   LogFileNotFoundException, InvalidTopicException
 security/         SecurityConfig (JWT resource server),
-                  JwtHandshakeInterceptor (WS ?token= validation)
+                  JwtHandshakeInterceptor (WS bearer subprotocol validation)
 streaming/
   kafka/          KafkaLogConsumer (batch @KafkaListener), LogEvent (record)
   filter/         LogFilterEngine (stateless), ClientFilter (record + sanitize)
@@ -76,7 +76,7 @@ streaming/
 ## Auth
 
 - REST: `oauth2ResourceServer().jwt()` — bearer token required on every path except `/actuator/health` and `/ws/**` (which is gated by the handshake interceptor instead).
-- WS: `JwtHandshakeInterceptor` validates `?token=<jwt>` query param at handshake. Failure → 401, no upgrade. JWT + subject stashed in handshake attributes.
+- WS: `JwtHandshakeInterceptor` validates `bearer.<jwt>` from `Sec-WebSocket-Protocol` at handshake. Failure -> 401, no upgrade. JWT + subject stashed in handshake attributes.
 - JWKS URI: `SSO_JWKS_URI` env var → `spring.security.oauth2.resourceserver.jwt.jwk-set-uri`.
 
 ## Error Handling
@@ -124,7 +124,6 @@ Default: `application.yaml`. Production: `application-prod.yaml` (requires all e
 | `LOGSTREAM_TOPICS` | `server-topic,system-topic,...` | Comma-separated Kafka topics |
 | `LOGSTREAM_ALLOWED_ORIGINS` | `http://localhost:5173` | WebSocket + REST CORS origins |
 | `SERVER_PORT` | `8080` | App port |
-| `HOST_PORT` | `8080` | Docker host port |
 | `JVM_MAX_HEAP` | `512m` | JVM heap (Docker only) |
 | `LOGSTREAM_LOG_DIR` | — | Directory containing log files; each topic expects `{topic}.log` inside |
 | `SSO_JWKS_URI` | — | JWKS endpoint for JWT validation (prod) |
