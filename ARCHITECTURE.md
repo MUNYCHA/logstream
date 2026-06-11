@@ -124,9 +124,10 @@ The payload is parsed into the sealed `WsClientMessage` via Jackson polymorphic 
 @JsonSubTypes({
   @Type(value = Subscribe.class,    name = "subscribe"),
   @Type(value = Filter.class,       name = "filter"),
-  @Type(value = ClearFilters.class, name = "clear-filters")
+  @Type(value = ClearFilters.class, name = "clear-filters"),
+  @Type(value = Refresh.class,      name = "refresh")
 })
-sealed interface WsClientMessage permits Subscribe, Filter, ClearFilters
+sealed interface WsClientMessage permits Subscribe, Filter, ClearFilters, Refresh
 ```
 
 | Action | Handler | Side effect |
@@ -134,6 +135,7 @@ sealed interface WsClientMessage permits Subscribe, Filter, ClearFilters
 | `Subscribe(topics)` | `handleSubscribe` | Intersects requested topics with allowlist, calls `sessionRegistry.subscribe` |
 | `Filter(filters)` | `handleFilter` | Converts `ClientFilterRequest` → sanitized `ClientFilter`, calls `sessionRegistry.setFilter` |
 | `ClearFilters()` | `handleClearFilters` | `sessionRegistry.setFilter(session, ClientFilter.EMPTY)` |
+| `Refresh(token)` | `handleRefresh` | Decodes the renewed JWT, requires the handshake subject, replaces the session's `jwt` attribute |
 
 ### Connection lifecycle
 - `afterConnectionEstablished`: register session (registry returns the decorator-wrapped session), send `TopicsListMessage` greeting (`{"type":"topics","topics":[...]}`) through the wrapped session.
@@ -168,6 +170,11 @@ Map<String, ClientFilter> filters           // sessionId → filter (absent = EM
 - Reads `bearer.<jwt>` from the offered `Sec-WebSocket-Protocol` values; the client also offers `logstream.v1`, which the server selects.
 - Calls `jwtDecoder.decode(token)`; on failure → respond `401`, abort upgrade.
 - On success, stashes the `Jwt` and `subject` in the handshake attributes for downstream access.
+
+### Session lifetime (`SessionExpirySweeper`)
+- The handshake validates the token once, but access tokens are short-lived (~5 min) — without further checks a session would stream for hours after its authorization lapsed.
+- Clients push silently-renewed tokens in-band via `{"action":"refresh","token":...}`; `handleRefresh` validates the token and rejects any subject other than the one that authenticated the handshake, then replaces the `jwt` attribute.
+- `SessionExpirySweeper` (`@Scheduled`, 60s) closes any session whose stored `jwt` has expired with `1008 Token expired`. The UI treats that close like any other drop: reconnect with a freshly renewed token.
 
 ## Error Handling
 
@@ -256,6 +263,8 @@ Client → Server:
                                                    keywords: { terms, mode },
                                                    timeRange, timeRangeMs } }
   Clear:        { "action": "clear-filters" }
+  Refresh:      { "action": "refresh", "token": "<jwt>" }   (renewed access token; same
+                                                             subject as the handshake)
 ```
 
 ## REST API

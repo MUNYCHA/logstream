@@ -9,6 +9,9 @@ import org.munycha.logstream.streaming.websocket.dto.TopicsListMessage;
 import org.munycha.logstream.streaming.websocket.dto.WsClientMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtException;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -41,15 +44,18 @@ public class LogWebSocketHandler extends TextWebSocketHandler implements SubProt
     private final LogstreamProperties properties;
     private final ObjectMapper objectMapper;
     private final ReplayBuffer replayBuffer;
+    private final JwtDecoder jwtDecoder;
 
     public LogWebSocketHandler(WebSocketSessionRegistry sessionRegistry,
                                LogstreamProperties properties,
                                ObjectMapper objectMapper,
-                               ReplayBuffer replayBuffer) {
+                               ReplayBuffer replayBuffer,
+                               JwtDecoder jwtDecoder) {
         this.sessionRegistry = sessionRegistry;
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.replayBuffer = replayBuffer;
+        this.jwtDecoder = jwtDecoder;
     }
 
     @Override
@@ -84,6 +90,8 @@ public class LogWebSocketHandler extends TextWebSocketHandler implements SubProt
                 handleFilter(session, f);
             } else if (msg instanceof WsClientMessage.ClearFilters) {
                 handleClearFilters(session);
+            } else if (msg instanceof WsClientMessage.Refresh refresh) {
+                handleRefresh(session, refresh);
             }
         } catch (Exception e) {
             log.warn("Failed to parse message from session {}: {}", session.getId(), e.getMessage());
@@ -132,6 +140,28 @@ public class LogWebSocketHandler extends TextWebSocketHandler implements SubProt
                     events.size(), session.getId(), topics);
         } catch (Exception e) {
             log.warn("Failed to send replay to session {}: {}", session.getId(), e.getMessage());
+        }
+    }
+
+    /**
+     * Accepts a renewed access token pushed over the socket and updates the session's
+     * stored JWT, keeping it ahead of {@link SessionExpirySweeper}. The new token must
+     * belong to the same subject that authenticated the handshake — a token for anyone
+     * else is ignored, so a session can never migrate to another user.
+     */
+    private void handleRefresh(WebSocketSession session, WsClientMessage.Refresh refresh) {
+        if (refresh.token() == null || refresh.token().isBlank()) return;
+        try {
+            Jwt jwt = jwtDecoder.decode(refresh.token());
+            String subject = (String) session.getAttributes().get("subject");
+            if (subject != null && !subject.equals(jwt.getSubject())) {
+                log.warn("Session {} sent a refresh token for a different subject — ignored", session.getId());
+                return;
+            }
+            session.getAttributes().put("jwt", jwt);
+            log.debug("Session {} refreshed its token, new expiry {}", session.getId(), jwt.getExpiresAt());
+        } catch (JwtException e) {
+            log.warn("Session {} sent an invalid refresh token: {}", session.getId(), e.getMessage());
         }
     }
 

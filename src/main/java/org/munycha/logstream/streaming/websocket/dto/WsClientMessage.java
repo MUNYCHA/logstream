@@ -14,15 +14,20 @@ import java.util.List;
 @JsonSubTypes({
         @JsonSubTypes.Type(value = WsClientMessage.Subscribe.class,    name = "subscribe"),
         @JsonSubTypes.Type(value = WsClientMessage.Filter.class,       name = "filter"),
-        @JsonSubTypes.Type(value = WsClientMessage.ClearFilters.class, name = "clear-filters")
+        @JsonSubTypes.Type(value = WsClientMessage.ClearFilters.class, name = "clear-filters"),
+        @JsonSubTypes.Type(value = WsClientMessage.Refresh.class,      name = "refresh")
 })
 @JsonIgnoreProperties(ignoreUnknown = true)
 public sealed interface WsClientMessage
-        permits WsClientMessage.Subscribe, WsClientMessage.Filter, WsClientMessage.ClearFilters {
+        permits WsClientMessage.Subscribe, WsClientMessage.Filter, WsClientMessage.ClearFilters,
+                WsClientMessage.Refresh {
 
     record Subscribe(List<String> topics) implements WsClientMessage {}
 
     record Filter(ClientFilterRequest filters) implements WsClientMessage {}
 
     record ClearFilters() implements WsClientMessage {}
+
+    /** Renewed access token pushed in-band so the session outlives the short token lifespan. */
+    record Refresh(String token) implements WsClientMessage {}
 }
