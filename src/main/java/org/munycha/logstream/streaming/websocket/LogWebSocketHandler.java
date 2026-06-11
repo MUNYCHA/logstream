@@ -2,7 +2,9 @@ package org.munycha.logstream.streaming.websocket;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.munycha.logstream.common.config.LogstreamProperties;
+import org.munycha.logstream.streaming.broadcast.ReplayBuffer;
 import org.munycha.logstream.streaming.filter.ClientFilter;
+import org.munycha.logstream.streaming.kafka.LogEvent;
 import org.munycha.logstream.streaming.websocket.dto.TopicsListMessage;
 import org.munycha.logstream.streaming.websocket.dto.WsClientMessage;
 import org.slf4j.Logger;
@@ -32,16 +34,22 @@ public class LogWebSocketHandler extends TextWebSocketHandler implements SubProt
 
     private static final Logger log = LoggerFactory.getLogger(LogWebSocketHandler.class);
 
+    /** Matches LogBroadcastService.MAX_BATCH_SIZE — same frame shape as live batches. */
+    private static final int REPLAY_CHUNK_SIZE = 100;
+
     private final WebSocketSessionRegistry sessionRegistry;
     private final LogstreamProperties properties;
     private final ObjectMapper objectMapper;
+    private final ReplayBuffer replayBuffer;
 
     public LogWebSocketHandler(WebSocketSessionRegistry sessionRegistry,
                                LogstreamProperties properties,
-                               ObjectMapper objectMapper) {
+                               ObjectMapper objectMapper,
+                               ReplayBuffer replayBuffer) {
         this.sessionRegistry = sessionRegistry;
         this.properties = properties;
         this.objectMapper = objectMapper;
+        this.replayBuffer = replayBuffer;
     }
 
     @Override
@@ -90,8 +98,41 @@ public class LogWebSocketHandler extends TextWebSocketHandler implements SubProt
                 .map(String::trim)
                 .filter(allowedTopics::contains)
                 .collect(Collectors.toSet());
-        sessionRegistry.subscribe(session, topics);
+        // Subscribe before replaying so no live event is lost in between; the rare
+        // event that gets both broadcast and replayed in that window is acceptable.
+        Set<String> previous = sessionRegistry.subscribe(session, topics);
         log.info("Session {} subscribed to topics: {}", session.getId(), topics);
+
+        Set<String> newlySubscribed = new HashSet<>(topics);
+        newlySubscribed.removeAll(previous);
+        sendReplay(session, newlySubscribed);
+    }
+
+    /**
+     * Sends buffered history for newly subscribed topics so the client sees recent
+     * logs immediately instead of a blank panel. Replay is unfiltered — the UI
+     * filters client-side, and server-side filters usually arrive after subscribe.
+     */
+    private void sendReplay(WebSocketSession session, Set<String> topics) {
+        if (topics.isEmpty()) return;
+        List<LogEvent> events = replayBuffer.replayFor(topics);
+        if (events.isEmpty()) return;
+        WebSocketSession managed = sessionRegistry.getManaged(session);
+        if (managed == null) return;
+        try {
+            for (int start = 0; start < events.size(); start += REPLAY_CHUNK_SIZE) {
+                int end = Math.min(start + REPLAY_CHUNK_SIZE, events.size());
+                List<LogEvent> chunk = events.subList(start, end);
+                String json = chunk.size() == 1
+                        ? objectMapper.writeValueAsString(chunk.get(0))
+                        : objectMapper.writeValueAsString(chunk);
+                managed.sendMessage(new TextMessage(json));
+            }
+            log.debug("Replayed {} buffered events to session {} for topics {}",
+                    events.size(), session.getId(), topics);
+        } catch (Exception e) {
+            log.warn("Failed to send replay to session {}: {}", session.getId(), e.getMessage());
+        }
     }
 
     private void handleFilter(WebSocketSession session, WsClientMessage.Filter f) {

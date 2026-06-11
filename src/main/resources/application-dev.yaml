@@ -16,3 +16,4 @@ logstream:
   allowed-origins: http://localhost:5173
   log-dir: # set to local log directory if testing file download
   max-sessions-per-user: 5
+  replay-buffer-size: 500

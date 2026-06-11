@@ -5,6 +5,9 @@ import org.junit.jupiter.api.Test;
 import org.munycha.logstream.common.config.LogstreamProperties;
 import org.springframework.web.socket.WebSocketSession;
 
+import java.util.Set;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.mock;
@@ -62,6 +65,14 @@ class WebSocketSessionRegistryTest {
         assertNotNull(registry.add(mockSession("s1"), null));
         assertNotNull(registry.add(mockSession("s2"), null));
         assertNotNull(registry.add(mockSession("s3"), null));
+    }
+
+    @Test
+    void subscribeReturnsPreviousTopics() {
+        WebSocketSession session = mockSession("s1");
+        registry.add(session, "alice");
+        assertEquals(Set.of(), registry.subscribe(session, Set.of("t1", "t2")));
+        assertEquals(Set.of("t1", "t2"), registry.subscribe(session, Set.of("t1", "t3")));
     }
 
     @Test

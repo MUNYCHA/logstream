@@ -39,6 +39,7 @@ streaming/
                   StatsAccumulator        — per-topic counters, atomic-swap drain
                   StatsBroadcaster        — @Scheduled(2s) stats emit
                   SessionBackpressure     — send wrapper; evicts sessions on send failure
+                  ReplayBuffer            — per-topic ring of recent events, replayed on subscribe
   websocket/      WebSocketConfig (/ws/logs, container limits, handshake interceptor)
                   LogWebSocketHandler     — lifecycle + sealed-message dispatch
                   WebSocketSessionRegistry — sessions/subscriptions/filters (ConcurrentHashMap)
@@ -61,7 +62,7 @@ streaming/
 - **`LogBroadcastService.flush`** (`@Scheduled`, 100ms) — drains queue, updates stats + meta, groups sessions by (subscriptions, filter), filters + serializes once per group, sends via `SessionBackpressure`.
 - **`StatsBroadcaster.flushStats`** (`@Scheduled`, 2s) — atomic-swap drain of `StatsAccumulator`, fans `StatsMessage` to all sessions.
 - **`SessionBackpressure.send`** — delegates to the `ConcurrentWebSocketSessionDecorator`-wrapped session (wrapped in `WebSocketSessionRegistry.add`); removes the session if the send throws.
-- **Tomcat WS threads** — handle inbound actions in `LogWebSocketHandler`.
+- **Tomcat WS threads** — handle inbound actions in `LogWebSocketHandler`; on subscribe they read `ReplayBuffer` (synchronized per-topic ring, single writer = flush thread) and send history through the decorated session.
 - All shared state in `ConcurrentHashMap` — safe for concurrent access.
 
 ## Performance Rules (DO NOT REGRESS)
@@ -94,6 +95,8 @@ Topic-unknown and file-missing both raise `LogFileNotFoundException` → same 40
 ```
 Server → Client:
   Greeting:    { "type": "topics", "topics": [...] }                    (once on connect)
+  Replay:      same shape as Streaming — last ~500 events per newly subscribed topic,
+               sent right after a subscribe; unfiltered (UI filters client-side)
   Streaming:   { "serverName", "path", "topic", "timestamp", "message" }  (single event)
           or:  [ {...}, {...}, ... ]                                      (batched, every ~100ms)
   Stats:       { "type": "stats", "topics": { topic: { rate, servers } }, "intervalMs": 2000 }
@@ -126,6 +129,7 @@ Default: `application.yaml`. Production: `application-prod.yaml` (requires all e
 | `LOGSTREAM_TOPICS` | `server-topic,system-topic,...` | Comma-separated Kafka topics |
 | `LOGSTREAM_ALLOWED_ORIGINS` | `http://localhost:5173` | WebSocket + REST CORS origins |
 | `LOGSTREAM_MAX_SESSIONS_PER_USER` | `5` | Max concurrent WS sessions per JWT subject; `0` disables. Over-cap connects are closed with 1008. |
+| `LOGSTREAM_REPLAY_BUFFER_SIZE` | `500` | Events kept per topic for replay to newly subscribed sessions; `0` disables. |
 | `SERVER_PORT` | `8080` | App port |
 | `JVM_MAX_HEAP` | `512m` | JVM heap (Docker only) |
 | `LOGSTREAM_LOG_DIR` | — | Directory containing log files; each topic expects `{topic}.log` inside |

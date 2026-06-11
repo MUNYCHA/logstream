@@ -38,7 +38,8 @@ class LogBroadcastServiceTest {
 
     @BeforeEach
     void setUp() {
-        registry = new WebSocketSessionRegistry(new LogstreamProperties());
+        LogstreamProperties properties = new LogstreamProperties();
+        registry = new WebSocketSessionRegistry(properties);
         backpressure = mock(SessionBackpressure.class);
         service = new LogBroadcastService(
                 registry,
@@ -46,7 +47,8 @@ class LogBroadcastServiceTest {
                 new LogFilterEngine(),
                 mock(TopicMetaStore.class),
                 new StatsAccumulator(),
-                backpressure);
+                backpressure,
+                new ReplayBuffer(properties));
     }
 
     private WebSocketSession mockSession(String id) {

@@ -16,6 +16,9 @@ public class LogstreamProperties {
     /** Max concurrent WebSocket sessions per authenticated user; values <= 0 disable the cap. */
     private int maxSessionsPerUser = 5;
 
+    /** Events kept per topic for replay to newly subscribed sessions; values <= 0 disable replay. */
+    private int replayBufferSize = 500;
+
     public List<String> getTopics() {
         return topics;
     }
@@ -46,5 +49,13 @@ public class LogstreamProperties {
 
     public void setMaxSessionsPerUser(int maxSessionsPerUser) {
         this.maxSessionsPerUser = maxSessionsPerUser;
+    }
+
+    public int getReplayBufferSize() {
+        return replayBufferSize;
+    }
+
+    public void setReplayBufferSize(int replayBufferSize) {
+        this.replayBufferSize = replayBufferSize;
     }
 }

@@ -42,6 +42,7 @@ public class LogBroadcastService {
     private final TopicMetaStore metaStore;
     private final StatsAccumulator statsAccumulator;
     private final SessionBackpressure sessionBackpressure;
+    private final ReplayBuffer replayBuffer;
 
     private final ConcurrentLinkedQueue<LogEvent> incomingQueue = new ConcurrentLinkedQueue<>();
     private final AtomicInteger incomingQueueSize = new AtomicInteger(0);
@@ -51,13 +52,15 @@ public class LogBroadcastService {
                                LogFilterEngine filterEngine,
                                TopicMetaStore metaStore,
                                StatsAccumulator statsAccumulator,
-                               SessionBackpressure sessionBackpressure) {
+                               SessionBackpressure sessionBackpressure,
+                               ReplayBuffer replayBuffer) {
         this.sessionRegistry = sessionRegistry;
         this.objectMapper = objectMapper;
         this.filterEngine = filterEngine;
         this.metaStore = metaStore;
         this.statsAccumulator = statsAccumulator;
         this.sessionBackpressure = sessionBackpressure;
+        this.replayBuffer = replayBuffer;
     }
 
     /**
@@ -105,10 +108,12 @@ public class LogBroadcastService {
         }
         if (batch.isEmpty()) return;
 
-        // Stats + topic metadata are independent of subscriptions — record every event.
+        // Stats, topic metadata and replay history are independent of subscriptions —
+        // record every event.
         for (LogEvent evt : batch) {
             statsAccumulator.record(evt);
             metaStore.record(evt);
+            replayBuffer.record(evt);
         }
 
         try {

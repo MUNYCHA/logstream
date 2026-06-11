@@ -87,10 +87,17 @@ public class WebSocketSessionRegistry {
         }
     }
 
-    public void subscribe(WebSocketSession session, Set<String> topics) {
+    /** Replaces the session's subscriptions; returns the previous set (empty if none). */
+    public Set<String> subscribe(WebSocketSession session, Set<String> topics) {
         Set<String> topicSet = ConcurrentHashMap.newKeySet();
         topicSet.addAll(topics);
-        subscriptions.put(session.getId(), topicSet);
+        Set<String> previous = subscriptions.put(session.getId(), topicSet);
+        return previous == null ? Set.of() : previous;
+    }
+
+    /** The decorated session for a raw one, or null if not registered. All sends must use it. */
+    public WebSocketSession getManaged(WebSocketSession session) {
+        return sessions.get(session.getId());
     }
 
     public boolean isSubscribed(WebSocketSession session, String topic) {
