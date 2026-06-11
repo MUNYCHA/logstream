@@ -98,6 +98,14 @@ public class WebSocketSessionRegistry {
         return topics != null && topics.contains(topic);
     }
 
+    /**
+     * The session's subscribed topics, or {@code null} when it has never subscribed.
+     * The returned set is the live concurrent set — callers that key on it must copy.
+     */
+    public Set<String> getSubscriptions(WebSocketSession session) {
+        return subscriptions.get(session.getId());
+    }
+
     public boolean hasSubscriptions(WebSocketSession session) {
         return subscriptions.containsKey(session.getId());
     }

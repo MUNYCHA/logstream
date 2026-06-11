@@ -14,7 +14,10 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -87,8 +90,10 @@ public class LogBroadcastService {
     }
 
     /**
-     * Flushes queued events every 100ms, batching per-session filtered events
-     * into a single WebSocket message (JSON array) to reduce frame overhead.
+     * Flushes queued events every 100ms. Sessions are grouped by identical
+     * (subscriptions, filter) so each group's events are matched and serialized
+     * exactly once — with the UI auto-subscribing every client to all topics,
+     * additional unfiltered viewers cost one extra send, not one extra serialization.
      */
     @Scheduled(fixedDelay = 100)
     public void flush() {
@@ -107,20 +112,28 @@ public class LogBroadcastService {
         }
 
         try {
-            sessionRegistry.forEach(session -> dispatchToSession(session, batch));
+            Map<DispatchKey, List<WebSocketSession>> groups = new HashMap<>();
+            sessionRegistry.forEach(session -> {
+                Set<String> topics = sessionRegistry.getSubscriptions(session);
+                // Require explicit subscription — no logs until client subscribes
+                if (topics == null || topics.isEmpty()) return;
+                ClientFilter filter = sessionRegistry.getFilter(session);
+                // Copy the live subscription set: the key must not mutate under a
+                // concurrent re-subscribe while it sits in the HashMap.
+                groups.computeIfAbsent(new DispatchKey(Set.copyOf(topics), filter), k -> new ArrayList<>())
+                        .add(session);
+            });
+            groups.forEach((key, sessions) -> dispatchToGroup(key, sessions, batch));
         } catch (Exception e) {
             log.error("Failed to flush broadcast batch: {}", e.getMessage(), e);
         }
     }
 
-    private void dispatchToSession(WebSocketSession session, List<LogEvent> batch) {
-        ClientFilter filter = sessionRegistry.getFilter(session);
-
+    private void dispatchToGroup(DispatchKey key, List<WebSocketSession> sessions, List<LogEvent> batch) {
         List<LogEvent> matched = new ArrayList<>();
         for (LogEvent evt : batch) {
-            // Require explicit subscription — no logs until client subscribes
-            if (!sessionRegistry.isSubscribed(session, evt.topic())) continue;
-            if (!filterEngine.matches(evt, filter)) continue;
+            if (!key.topics().contains(evt.topic())) continue;
+            if (!filterEngine.matches(evt, key.filter())) continue;
             matched.add(evt);
         }
         if (matched.isEmpty()) return;
@@ -132,10 +145,18 @@ public class LogBroadcastService {
                 String json = chunk.size() == 1
                         ? objectMapper.writeValueAsString(chunk.get(0))
                         : objectMapper.writeValueAsString(chunk);
-                sessionBackpressure.send(session, new TextMessage(json));
+                // TextMessage is immutable — safe to share across the group's sessions.
+                TextMessage message = new TextMessage(json);
+                for (WebSocketSession session : sessions) {
+                    sessionBackpressure.send(session, message);
+                }
             } catch (Exception e) {
-                log.error("Failed to serialize batch for session {}: {}", session.getId(), e.getMessage());
+                log.error("Failed to serialize batch for group of {} session(s): {}",
+                        sessions.size(), e.getMessage());
             }
         }
     }
+
+    /** Sessions with equal subscriptions and filter share one serialized payload. */
+    private record DispatchKey(Set<String> topics, ClientFilter filter) {}
 }

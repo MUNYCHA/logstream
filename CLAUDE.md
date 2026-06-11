@@ -6,7 +6,7 @@ Guidance for Claude Code. For deep implementation details, see [ARCHITECTURE.md]
 
 Logstream is a real-time log streaming server. Kafka → WebSocket. Also exposes REST endpoints for log file downloads and per-topic metadata. JWT-secured.
 
-**Data flow:** Kafka → `KafkaLogConsumer` (batch poll) → `ConcurrentLinkedQueue` → `LogBroadcastService` (@Scheduled 100ms flush) → per-session subscription + filter → `SessionBackpressure` → WebSocket clients. In parallel: `StatsAccumulator` collects per-topic counters; `StatsBroadcaster` fans them out every 2s.
+**Data flow:** Kafka → `KafkaLogConsumer` (batch poll) → `ConcurrentLinkedQueue` → `LogBroadcastService` (@Scheduled 100ms flush) → sessions grouped by (subscriptions, filter), one serialization per group → `SessionBackpressure` → WebSocket clients. In parallel: `StatsAccumulator` collects per-topic counters; `StatsBroadcaster` fans them out every 2s.
 
 ## Build & Run
 
@@ -58,7 +58,7 @@ streaming/
 ## Threading Model
 
 - **Kafka consumer thread** — only calls `incomingQueue.add()`; never blocks.
-- **`LogBroadcastService.flush`** (`@Scheduled`, 100ms) — drains queue, updates stats + meta, filters per session, sends via `SessionBackpressure`.
+- **`LogBroadcastService.flush`** (`@Scheduled`, 100ms) — drains queue, updates stats + meta, groups sessions by (subscriptions, filter), filters + serializes once per group, sends via `SessionBackpressure`.
 - **`StatsBroadcaster.flushStats`** (`@Scheduled`, 2s) — atomic-swap drain of `StatsAccumulator`, fans `StatsMessage` to all sessions.
 - **`SessionBackpressure.send`** — delegates to the `ConcurrentWebSocketSessionDecorator`-wrapped session (wrapped in `WebSocketSessionRegistry.add`); removes the session if the send throws.
 - **Tomcat WS threads** — handle inbound actions in `LogWebSocketHandler`.
@@ -68,6 +68,7 @@ streaming/
 
 - **Broadcast is batched**: `LogBroadcastService.broadcast()` MUST only enqueue. NEVER send directly from the Kafka thread.
 - **Flush interval**: 100ms — matched events as JSON array (2+) or single object (1).
+- **Group serialization**: sessions with identical (subscriptions, filter) share one matched list, one serialization, and the same `TextMessage` instance per chunk. NEVER reintroduce per-session serialization — with the UI auto-subscribing all clients to all topics, that multiplies flush cost by viewer count.
 - **Stats broadcast**: every 2s, independent of subscriptions, drained via atomic accumulator swap.
 - **Backpressure**: every session is wrapped in `ConcurrentWebSocketSessionDecorator` (5s send-time limit, 2MB buffer) at registration. Slow clients buffer then get closed. NEVER block a scheduler waiting for a slow client; NEVER send on a raw unwrapped session.
 - **Filter engine is stateless**: no per-call allocations beyond what `ClientFilter.sanitize()` already normalized.
