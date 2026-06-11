@@ -13,6 +13,9 @@ public class LogstreamProperties {
     private List<String> allowedOrigins;
     private String logDir;
 
+    /** Max concurrent WebSocket sessions per authenticated user; values <= 0 disable the cap. */
+    private int maxSessionsPerUser = 5;
+
     public List<String> getTopics() {
         return topics;
     }
@@ -35,5 +38,13 @@ public class LogstreamProperties {
 
     public void setLogDir(String logDir) {
         this.logDir = logDir;
+    }
+
+    public int getMaxSessionsPerUser() {
+        return maxSessionsPerUser;
+    }
+
+    public void setMaxSessionsPerUser(int maxSessionsPerUser) {
+        this.maxSessionsPerUser = maxSessionsPerUser;
     }
 }

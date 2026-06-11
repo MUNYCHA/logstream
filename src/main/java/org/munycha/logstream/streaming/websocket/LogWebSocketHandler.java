@@ -45,11 +45,19 @@ public class LogWebSocketHandler extends TextWebSocketHandler implements SubProt
     }
 
     @Override
-    public void afterConnectionEstablished(WebSocketSession session) {
-        log.info("WebSocket connected: {} (active sessions: {})", session.getId(), sessionRegistry.activeCount() + 1);
+    public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+        // Subject is stashed in handshake attributes by JwtHandshakeInterceptor.
+        String subject = (String) session.getAttributes().get("subject");
+        WebSocketSession managed = sessionRegistry.add(session, subject);
+        if (managed == null) {
+            log.warn("Rejecting session {}: user '{}' reached the per-user session limit ({})",
+                    session.getId(), subject, properties.getMaxSessionsPerUser());
+            session.close(CloseStatus.POLICY_VIOLATION.withReason("Session limit reached"));
+            return;
+        }
+        log.info("WebSocket connected: {} (active sessions: {})", session.getId(), sessionRegistry.activeCount());
         // Send the greeting through the decorated session so it can't collide
         // with a concurrent broadcast on the raw socket.
-        WebSocketSession managed = sessionRegistry.add(session);
         try {
             TopicsListMessage greeting = new TopicsListMessage(properties.getTopics());
             managed.sendMessage(new TextMessage(objectMapper.writeValueAsString(greeting)));

@@ -77,6 +77,7 @@ streaming/
 
 - REST: `oauth2ResourceServer().jwt()` — bearer token required on every path except `/actuator/health` and `/ws/**` (which is gated by the handshake interceptor instead).
 - WS: `JwtHandshakeInterceptor` validates `bearer.<jwt>` from `Sec-WebSocket-Protocol` at handshake. Failure -> 401, no upgrade. JWT + subject stashed in handshake attributes.
+- WS session cap: `WebSocketSessionRegistry.add(session, subject)` atomically enforces `logstream.max-sessions-per-user` per JWT subject; over-cap connections are closed with `1008 Session limit reached` in `LogWebSocketHandler`.
 - JWKS URI: `SSO_JWKS_URI` env var → `spring.security.oauth2.resourceserver.jwt.jwk-set-uri`.
 
 ## Error Handling
@@ -123,6 +124,7 @@ Default: `application.yaml`. Production: `application-prod.yaml` (requires all e
 | `KAFKA_MAX_POLL_RECORDS` | `500` | Max records per batch poll |
 | `LOGSTREAM_TOPICS` | `server-topic,system-topic,...` | Comma-separated Kafka topics |
 | `LOGSTREAM_ALLOWED_ORIGINS` | `http://localhost:5173` | WebSocket + REST CORS origins |
+| `LOGSTREAM_MAX_SESSIONS_PER_USER` | `5` | Max concurrent WS sessions per JWT subject; `0` disables. Over-cap connects are closed with 1008. |
 | `SERVER_PORT` | `8080` | App port |
 | `JVM_MAX_HEAP` | `512m` | JVM heap (Docker only) |
 | `LOGSTREAM_LOG_DIR` | — | Directory containing log files; each topic expects `{topic}.log` inside |

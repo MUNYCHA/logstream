@@ -1,5 +1,6 @@
 package org.munycha.logstream.streaming.websocket;
 
+import org.munycha.logstream.common.config.LogstreamProperties;
 import org.munycha.logstream.streaming.filter.ClientFilter;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
@@ -21,18 +22,54 @@ public class WebSocketSessionRegistry {
     private final ConcurrentHashMap<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Set<String>> subscriptions = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, ClientFilter> filters = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Set<String>> subjectSessions = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> sessionSubjects = new ConcurrentHashMap<>();
+
+    private final LogstreamProperties properties;
+
+    public WebSocketSessionRegistry(LogstreamProperties properties) {
+        this.properties = properties;
+    }
 
     /**
      * Registers a session, wrapping it in {@link ConcurrentWebSocketSessionDecorator} so sends
      * are thread-safe and buffered — a slow client only stalls (and eventually closes) its own
      * session instead of blocking the broadcast threads. Returns the wrapped session; all sends
      * must go through it, never the raw session.
+     *
+     * <p>Returns {@code null} when the subject is already at the per-user session limit;
+     * the caller must close the connection and must not use the raw session.
      */
-    public WebSocketSession add(WebSocketSession session) {
+    public WebSocketSession add(WebSocketSession session, String subject) {
+        if (!reserveSlot(session.getId(), subject)) {
+            return null;
+        }
         WebSocketSession decorated = new ConcurrentWebSocketSessionDecorator(
                 session, SEND_TIME_LIMIT_MS, SEND_BUFFER_SIZE_LIMIT);
         sessions.put(session.getId(), decorated);
         return decorated;
+    }
+
+    /**
+     * Atomically claims a per-subject slot — the size check and insert happen inside a single
+     * {@code compute} so concurrent handshakes for the same subject cannot both pass the cap.
+     */
+    private boolean reserveSlot(String sessionId, String subject) {
+        int cap = properties.getMaxSessionsPerUser();
+        if (cap <= 0 || subject == null) return true;
+        boolean[] accepted = new boolean[1];
+        subjectSessions.compute(subject, (key, ids) -> {
+            if (ids == null) ids = ConcurrentHashMap.newKeySet();
+            if (ids.size() < cap) {
+                ids.add(sessionId);
+                accepted[0] = true;
+            }
+            return ids;
+        });
+        if (accepted[0]) {
+            sessionSubjects.put(sessionId, subject);
+        }
+        return accepted[0];
     }
 
     /** Removes a session by id — accepts either the raw or the decorated instance. */
@@ -41,6 +78,13 @@ public class WebSocketSessionRegistry {
         sessions.remove(id);
         subscriptions.remove(id);
         filters.remove(id);
+        String subject = sessionSubjects.remove(id);
+        if (subject != null) {
+            subjectSessions.computeIfPresent(subject, (key, ids) -> {
+                ids.remove(id);
+                return ids.isEmpty() ? null : ids;
+            });
+        }
     }
 
     public void subscribe(WebSocketSession session, Set<String> topics) {
