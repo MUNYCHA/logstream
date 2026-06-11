@@ -38,8 +38,9 @@ Thread: scheduling-2 (Spring @Scheduled — StatsBroadcaster.flushStats, every 2
   ▼
 SessionBackpressure (shared by both flush paths)
   │
-  │  → reserve slot via atomic CAS (max 500 pending per session)
-  │  → synchronized(session) { session.sendMessage() }
+  │  → session.sendMessage() on the ConcurrentWebSocketSessionDecorator-wrapped
+  │    session — non-blocking for the scheduler: messages buffer per session
+  │    (decorator closes any session exceeding 5s send time or 2MB buffered)
   │
   ▼
 WebSocket Clients
@@ -47,7 +48,7 @@ WebSocket Clients
 
 ### Key threading rules
 - **Kafka consumer thread**: Only enqueues; never blocks on WebSocket I/O.
-- **Two scheduled threads** (`flush` 100ms, `flushStats` 2s) both route sends through `SessionBackpressure`, whose `synchronized(session)` block serializes writes per session.
+- **Two scheduled threads** (`flush` 100ms, `flushStats` 2s) both route sends through `SessionBackpressure`. Concurrency and slow-client isolation are handled by the `ConcurrentWebSocketSessionDecorator` each session is wrapped in at registration — a stuck client never blocks the schedulers.
 - **Tomcat WS threads**: Handle inbound client messages (subscribe/filter/clear) in `LogWebSocketHandler` — parsed via Jackson into the sealed `WsClientMessage`.
 - **Session registry**: All `ConcurrentHashMap` — safe for concurrent reads from flush threads + writes from WS threads.
 
@@ -60,7 +61,7 @@ The broadcast feature is split across four cooperating classes — each with one
 | `LogBroadcastService` | Enqueue (called from Kafka thread) + 100ms flush of matched events to subscribed sessions. | `@KafkaListener` callback + `@Scheduled(fixedDelay = 100)` |
 | `StatsAccumulator` | Per-topic `LongAdder` counters + active-server `Set<String>`. Atomic swap on drain. | Called by `LogBroadcastService.flush` for every drained event |
 | `StatsBroadcaster` | Drains the accumulator, builds a `StatsMessage`, fans out to every session. | `@Scheduled(fixedDelay = 2000)` |
-| `SessionBackpressure` | Per-session pending counter + `synchronized(session)` send. Drops on slow clients. | Called by both schedulers |
+| `SessionBackpressure` | Sends to the decorator-wrapped session; evicts sessions whose send throws. Slow clients are buffered then closed by the decorator. | Called by both schedulers |
 
 `TopicMetaStore` (under `streaming/topic/`) is updated from the same `flush` loop — it holds per-server, per-path counters and last-seen timestamps queried by the REST meta endpoint.
 
@@ -79,37 +80,26 @@ Kafka broker
       → Collect matched events into per-session list
       → Serialize: 1 event → single JSON object, 2+ events → JSON array
       → sessionBackpressure.send(session, TextMessage)
-          → atomic CAS reserve slot (drop if pending ≥ 500)
-          → synchronized(session) → session.sendMessage()
+          → session.sendMessage() (decorator buffers; never blocks the scheduler)
   → Client receives JSON frame
 ```
 
-## Backpressure System (`SessionBackpressure`)
+## Backpressure System
 
-```
-ConcurrentHashMap<String, AtomicInteger> sendQueue  // sessionId → pending count
+Slow-client protection lives in `ConcurrentWebSocketSessionDecorator`, which
+`WebSocketSessionRegistry.add()` wraps around every raw session:
 
-send(session, message):
-  pending = sendQueue.computeIfAbsent(sessionId, → AtomicInteger(0))
-  do {
-    current = pending.get()
-    if (current >= 500) → DROP message, return    // slow client
-  } while (!CAS(current, current + 1))
-  synchronized (session) {
-    try {
-      session.sendMessage(message)
-    } catch (Exception e) {
-      sessionRegistry.remove(session)
-      sendQueue.remove(sessionId)
-    } finally {
-      pending.decrementAndGet()
-    }
-  }
+- Sends from any thread are safe (the decorator serializes writes internally).
+- If a send is already in progress, additional messages buffer per session and
+  the calling scheduler returns immediately — a dead client can never stall
+  broadcasts to other sessions.
+- A session that exceeds **5 s send time** or **2 MB buffered** is marked
+  unreliable and closed (`SESSION_NOT_RELIABLE`); the buffer is freed and the
+  browser may reconnect. Healthy clients buffer ~0 bytes.
 
-// Wired via sessionRegistry.onRemove(this::onSessionRemoved) — cleans up on disconnect.
-```
-
-Lock-free CAS reservation prevents slow clients from consuming heap; the lock is held only for the actual `sendMessage` call.
+`SessionBackpressure` is the thin send wrapper both schedulers call: it
+delegates to the decorated session and removes the session from the registry
+if the send throws.
 
 ## Filter Engine (`LogFilterEngine`)
 
@@ -146,28 +136,26 @@ sealed interface WsClientMessage permits Subscribe, Filter, ClearFilters
 | `ClearFilters()` | `handleClearFilters` | `sessionRegistry.setFilter(session, ClientFilter.EMPTY)` |
 
 ### Connection lifecycle
-- `afterConnectionEstablished`: register session, send `TopicsListMessage` greeting (`{"type":"topics","topics":[...]}`).
-- `afterConnectionClosed`: `sessionRegistry.remove(session)` (which cascades to backpressure cleanup via `onRemove`).
+- `afterConnectionEstablished`: register session (registry returns the decorator-wrapped session), send `TopicsListMessage` greeting (`{"type":"topics","topics":[...]}`) through the wrapped session.
+- `afterConnectionClosed`: `sessionRegistry.remove(session)`.
 
 ## Session Registry (`WebSocketSessionRegistry`)
 
 ```java
-Set<WebSocketSession> sessions              // ConcurrentHashMap.newKeySet()
+Map<String, WebSocketSession> sessions      // sessionId → decorator-wrapped session
 Map<String, Set<String>> subscriptions      // sessionId → topic set
 Map<String, ClientFilter> filters           // sessionId → filter (absent = EMPTY)
-List<Consumer<String>> removeListeners      // notified on remove(session)
 ```
 
 | Method | Thread safety | Notes |
 |---|---|---|
-| `add(session)` | Concurrent set add | Tomcat WS thread |
-| `remove(session)` | Set remove + map removes + listener callbacks | WS thread or backpressure (on send failure) |
+| `add(session)` | Map put | Wraps in `ConcurrentWebSocketSessionDecorator` (5s/2MB limits), returns the wrapped session. Tomcat WS thread |
+| `remove(session)` | Map removes by id | Accepts raw or wrapped instance. WS thread or backpressure (on send failure) |
 | `subscribe(session, topics)` | Atomic replace | Replaces all subscriptions |
 | `isSubscribed(session, topic)` | Map get + set contains | Hot path in flush |
 | `setFilter(session, filter)` | Map put (or remove if empty) | Hot path on filter messages |
 | `getFilter(session)` | Map getOrDefault(EMPTY) | Hot path in flush |
-| `forEach(consumer)` | Streams sessions, filters by `isOpen()` | Used by flush + stats |
-| `onRemove(listener)` | Append to listener list | Called by `SessionBackpressure` at construction |
+| `forEach(consumer)` | Streams wrapped sessions, filters by `isOpen()` | Used by flush + stats |
 
 ## Authentication
 
@@ -328,7 +316,7 @@ src/main/java/org/munycha/logstream/
     │   ├── LogBroadcastService.java        # Enqueue + 100ms flush
     │   ├── StatsAccumulator.java           # Per-topic counters, atomic-swap drain
     │   ├── StatsBroadcaster.java           # @Scheduled(2s) stats emit
-    │   └── SessionBackpressure.java        # Per-session pending CAS + synchronized send
+    │   └── SessionBackpressure.java        # Send wrapper; evicts sessions on send failure
     │
     ├── websocket/
     │   ├── WebSocketConfig.java            # /ws/logs registration, container limits

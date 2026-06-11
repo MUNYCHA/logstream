@@ -17,6 +17,7 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched flush)  �
 2. Every 100ms, the broadcast service flushes the queue. Each event is evaluated per session against **topic subscriptions** and **filters** (server, path, text search, keywords, time range). Matched events go out as a single JSON object or a batched array.
 3. In parallel, accumulator updates per-topic rate counters and active-server sets. Every 2s a `stats` message is fanned out to every session.
 4. On connect, the client receives a one-shot `topics` greeting listing the configured topics, then live events.
+5. Slow or dead clients never stall the stream for others: each session is wrapped in a `ConcurrentWebSocketSessionDecorator`, so its messages buffer independently (up to 2 MB / 5 s) before the session is closed. The browser can simply reconnect.
 
 ## Authentication
 
@@ -160,7 +161,7 @@ src/main/java/org/munycha/logstream/
     │   ├── LogBroadcastService.java   # Enqueue + @Scheduled(100ms) flush hot path
     │   ├── StatsAccumulator.java      # Per-topic rate + active-server tracking
     │   ├── StatsBroadcaster.java      # @Scheduled(2s) stats emit
-    │   └── SessionBackpressure.java   # Per-session pending counters + synchronized(session) send
+    │   └── SessionBackpressure.java   # Send wrapper — evicts sessions whose send fails
     ├── websocket/
     │   ├── WebSocketConfig.java       # /ws/logs endpoint, container limits, handshake interceptor
     │   ├── LogWebSocketHandler.java   # Lifecycle + action dispatch (subscribe/filter/clear-filters)

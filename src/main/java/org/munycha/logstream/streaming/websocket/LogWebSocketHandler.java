@@ -47,10 +47,12 @@ public class LogWebSocketHandler extends TextWebSocketHandler implements SubProt
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
         log.info("WebSocket connected: {} (active sessions: {})", session.getId(), sessionRegistry.activeCount() + 1);
-        sessionRegistry.add(session);
+        // Send the greeting through the decorated session so it can't collide
+        // with a concurrent broadcast on the raw socket.
+        WebSocketSession managed = sessionRegistry.add(session);
         try {
             TopicsListMessage greeting = new TopicsListMessage(properties.getTopics());
-            session.sendMessage(new TextMessage(objectMapper.writeValueAsString(greeting)));
+            managed.sendMessage(new TextMessage(objectMapper.writeValueAsString(greeting)));
         } catch (Exception e) {
             log.error("Failed to send topic list to session {}", session.getId(), e);
         }

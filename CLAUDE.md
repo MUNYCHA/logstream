@@ -38,7 +38,7 @@ streaming/
   broadcast/      LogBroadcastService     — enqueue + 100ms flush hot path
                   StatsAccumulator        — per-topic counters, atomic-swap drain
                   StatsBroadcaster        — @Scheduled(2s) stats emit
-                  SessionBackpressure     — per-session pending CAS + synchronized send
+                  SessionBackpressure     — send wrapper; evicts sessions on send failure
   websocket/      WebSocketConfig (/ws/logs, container limits, handshake interceptor)
                   LogWebSocketHandler     — lifecycle + sealed-message dispatch
                   WebSocketSessionRegistry — sessions/subscriptions/filters (ConcurrentHashMap)
@@ -60,7 +60,7 @@ streaming/
 - **Kafka consumer thread** — only calls `incomingQueue.add()`; never blocks.
 - **`LogBroadcastService.flush`** (`@Scheduled`, 100ms) — drains queue, updates stats + meta, filters per session, sends via `SessionBackpressure`.
 - **`StatsBroadcaster.flushStats`** (`@Scheduled`, 2s) — atomic-swap drain of `StatsAccumulator`, fans `StatsMessage` to all sessions.
-- **`SessionBackpressure.send`** — atomic CAS on per-session pending counter (drop at 500), then `synchronized(session) { session.sendMessage(...) }`.
+- **`SessionBackpressure.send`** — delegates to the `ConcurrentWebSocketSessionDecorator`-wrapped session (wrapped in `WebSocketSessionRegistry.add`); removes the session if the send throws.
 - **Tomcat WS threads** — handle inbound actions in `LogWebSocketHandler`.
 - All shared state in `ConcurrentHashMap` — safe for concurrent access.
 
@@ -69,9 +69,9 @@ streaming/
 - **Broadcast is batched**: `LogBroadcastService.broadcast()` MUST only enqueue. NEVER send directly from the Kafka thread.
 - **Flush interval**: 100ms — matched events as JSON array (2+) or single object (1).
 - **Stats broadcast**: every 2s, independent of subscriptions, drained via atomic accumulator swap.
-- **Backpressure**: lock-free CAS on per-session pending counter in `SessionBackpressure`. Drop at 500. NEVER block a scheduler waiting for a slow client.
+- **Backpressure**: every session is wrapped in `ConcurrentWebSocketSessionDecorator` (5s send-time limit, 2MB buffer) at registration. Slow clients buffer then get closed. NEVER block a scheduler waiting for a slow client; NEVER send on a raw unwrapped session.
 - **Filter engine is stateless**: no per-call allocations beyond what `ClientFilter.sanitize()` already normalized.
-- **Session send**: MUST be `synchronized(session)` — WebSocket is not thread-safe. The lock lives only inside `SessionBackpressure.trySend`.
+- **Session send**: WebSocket is not thread-safe — the decorator owns write serialization. All sends go through `SessionBackpressure.send` on the wrapped session; no manual `synchronized(session)` anywhere.
 
 ## Auth
 

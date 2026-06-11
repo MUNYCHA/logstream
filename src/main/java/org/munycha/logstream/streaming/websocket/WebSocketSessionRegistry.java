@@ -3,36 +3,44 @@ package org.munycha.logstream.streaming.websocket;
 import org.munycha.logstream.streaming.filter.ClientFilter;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorator;
 
-import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
 @Component
 public class WebSocketSessionRegistry {
 
-    private final Set<WebSocketSession> sessions = ConcurrentHashMap.newKeySet();
+    /** Max time a single send may block before the session is marked unreliable and closed. */
+    private static final int SEND_TIME_LIMIT_MS = 5_000;
+
+    /** Max bytes buffered for a slow session before it is closed. */
+    private static final int SEND_BUFFER_SIZE_LIMIT = 2 * 1024 * 1024;
+
+    private final ConcurrentHashMap<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Set<String>> subscriptions = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, ClientFilter> filters = new ConcurrentHashMap<>();
-    private final List<Consumer<String>> removeListeners = new CopyOnWriteArrayList<>();
 
-    /** Register a callback invoked when a session is removed (for cleanup). */
-    public void onRemove(Consumer<String> listener) {
-        removeListeners.add(listener);
+    /**
+     * Registers a session, wrapping it in {@link ConcurrentWebSocketSessionDecorator} so sends
+     * are thread-safe and buffered — a slow client only stalls (and eventually closes) its own
+     * session instead of blocking the broadcast threads. Returns the wrapped session; all sends
+     * must go through it, never the raw session.
+     */
+    public WebSocketSession add(WebSocketSession session) {
+        WebSocketSession decorated = new ConcurrentWebSocketSessionDecorator(
+                session, SEND_TIME_LIMIT_MS, SEND_BUFFER_SIZE_LIMIT);
+        sessions.put(session.getId(), decorated);
+        return decorated;
     }
 
-    public void add(WebSocketSession session) {
-        sessions.add(session);
-    }
-
+    /** Removes a session by id — accepts either the raw or the decorated instance. */
     public void remove(WebSocketSession session) {
-        sessions.remove(session);
         String id = session.getId();
+        sessions.remove(id);
         subscriptions.remove(id);
         filters.remove(id);
-        removeListeners.forEach(l -> l.accept(id));
     }
 
     public void subscribe(WebSocketSession session, Set<String> topics) {
@@ -63,12 +71,12 @@ public class WebSocketSessionRegistry {
     }
 
     public void forEach(Consumer<WebSocketSession> action) {
-        sessions.stream()
+        sessions.values().stream()
                 .filter(WebSocketSession::isOpen)
                 .forEach(action);
     }
 
     public int activeCount() {
-        return (int) sessions.stream().filter(WebSocketSession::isOpen).count();
+        return (int) sessions.values().stream().filter(WebSocketSession::isOpen).count();
     }
 }
