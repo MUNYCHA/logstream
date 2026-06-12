@@ -154,7 +154,9 @@ public class LogWebSocketHandler extends TextWebSocketHandler implements SubProt
         try {
             Jwt jwt = jwtDecoder.decode(refresh.token());
             String subject = (String) session.getAttributes().get("subject");
-            if (subject != null && !subject.equals(jwt.getSubject())) {
+            // Fail closed: a session with no subject on record has no identity to
+            // verify against, so it must not be refreshable with anyone's token.
+            if (subject == null || !subject.equals(jwt.getSubject())) {
                 log.warn("Session {} sent a refresh token for a different subject — ignored", session.getId());
                 return;
             }

@@ -35,6 +35,13 @@ public class JwtHandshakeInterceptor implements HandshakeInterceptor {
 
         try {
             Jwt jwt = jwtDecoder.decode(token);
+            // Fail closed on a subject-less token: the session cap and the refresh
+            // identity check both key on the subject, so a session must never exist
+            // without one.
+            if (jwt.getSubject() == null || jwt.getSubject().isBlank()) {
+                response.setStatusCode(HttpStatus.UNAUTHORIZED);
+                return false;
+            }
             attributes.put("jwt", jwt);
             attributes.put("subject", jwt.getSubject());
             return true;

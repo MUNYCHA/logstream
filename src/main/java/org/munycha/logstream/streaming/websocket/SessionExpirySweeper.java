@@ -35,10 +35,14 @@ public class SessionExpirySweeper {
     public void closeExpiredSessions() {
         Instant now = Instant.now();
         sessionRegistry.forEach(session -> {
-            if (!(session.getAttributes().get("jwt") instanceof Jwt jwt)) return;
-            Instant expiresAt = jwt.getExpiresAt();
-            if (expiresAt == null || expiresAt.isAfter(now)) return;
-            log.info("Closing session {}: token expired at {}", session.getId(), expiresAt);
+            // Fail closed: a session survives the sweep only with a stored token
+            // whose expiry is provably in the future. No token or no exp claim
+            // means authorization can't be verified — close it.
+            Instant expiresAt = session.getAttributes().get("jwt") instanceof Jwt jwt
+                    ? jwt.getExpiresAt() : null;
+            if (expiresAt != null && expiresAt.isAfter(now)) return;
+            log.info("Closing session {}: {}", session.getId(),
+                    expiresAt == null ? "token has no expiry" : "token expired at " + expiresAt);
             try {
                 session.close(CloseStatus.POLICY_VIOLATION.withReason("Token expired"));
             } catch (IOException e) {

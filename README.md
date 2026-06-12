@@ -10,13 +10,15 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched flush)  �
                                        ├──→ StatsAccumulator (per-topic rate + servers)
                                        │      └──→ StatsBroadcaster (every 2s) ──→ all sessions
                                        │
+                                       ├──→ ReplayBuffer (recent events per topic, replayed on subscribe)
+                                       │
                                        └──→ TopicMetaStore (server/path snapshots, queried via REST)
 ```
 
 1. Kafka consumer subscribes to configured topics and enqueues events (non-blocking)
-2. Every 100ms, the broadcast service flushes the queue. Each event is evaluated per session against **topic subscriptions** and **filters** (server, path, text search, keywords, time range). Matched events go out as a single JSON object or a batched array.
+2. Every 100ms, the broadcast service flushes the queue. Sessions are grouped by identical (**topic subscriptions**, **filters** — server, path, text search, keywords, time range); each group's matched events are serialized once and sent as a single JSON object or a batched array.
 3. In parallel, accumulator updates per-topic rate counters and active-server sets. Every 2s a `stats` message is fanned out to every session.
-4. On connect, the client receives a one-shot `topics` greeting listing the configured topics, then live events.
+4. On connect, the client receives a one-shot `topics` greeting listing the configured topics. On subscribe, the last ~500 buffered events per newly subscribed topic are replayed so the panel isn't blank, then live events follow.
 5. Slow or dead clients never stall the stream for others: each session is wrapped in a `ConcurrentWebSocketSessionDecorator`, so its messages buffer independently (up to 2 MB / 5 s) before the session is closed. The browser can simply reconnect.
 
 ## Authentication
@@ -24,7 +26,9 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched flush)  �
 Both REST and WebSocket require a valid JWT (OAuth2 resource server).
 
 - **REST** — `Authorization: Bearer <token>` header
-- **WebSocket** — token passed as the `bearer.<jwt>` WebSocket subprotocol alongside `logstream.v1`. Validated by `JwtHandshakeInterceptor` before the connection is upgraded; failure → `401`.
+- **WebSocket** — token passed as the `bearer.<jwt>` WebSocket subprotocol alongside `logstream.v1`. Validated by `JwtHandshakeInterceptor` before the connection is upgraded; failure → `401`. The token must carry both a `sub` and an `exp` claim — a validly signed token missing its subject is rejected at the handshake, and one missing its expiry is closed by the sweeper (fail closed).
+- **Session cap** — at most `LOGSTREAM_MAX_SESSIONS_PER_USER` concurrent sessions per JWT subject; over-cap connections are closed with `1008 Session limit reached`.
+- **Token lifetime** — a session lives only as long as its JWT, no exceptions. Clients push silently-renewed tokens via the `refresh` action (must be the same subject as the handshake); `SessionExpirySweeper` (every 60s) closes any session whose stored token is expired, has no expiry, or is missing, with `1008 Token expired`. The UI reconnects with a fresh token.
 
 The signing keys are fetched from `SSO_JWKS_URI`. `GET /actuator/health` is the only unauthenticated endpoint.
 
@@ -38,6 +42,8 @@ The signing keys are fetched from `SSO_JWKS_URI`. `GET /actuator/health` is the 
 ```json
 { "type": "topics", "topics": ["server-topic", "system-topic", "app1-topic"] }
 ```
+
+**On subscribe — replay:** the last ~500 buffered events per newly subscribed topic, sent immediately in the same single-object/array shapes as live events below. Replay is unfiltered (the UI filters client-side).
 
 **Live log event (single):**
 ```json
@@ -93,6 +99,11 @@ The signing keys are fetched from `SSO_JWKS_URI`. `GET /actuator/health` is the 
 **Clear all filters:**
 ```json
 { "action": "clear-filters" }
+```
+
+**Refresh the session token** (renewed access token; must be the same subject as the handshake, otherwise ignored):
+```json
+{ "action": "refresh", "token": "<jwt>" }
 ```
 
 ## REST API
@@ -161,13 +172,15 @@ src/main/java/org/munycha/logstream/
     │   ├── LogBroadcastService.java   # Enqueue + @Scheduled(100ms) flush hot path
     │   ├── StatsAccumulator.java      # Per-topic rate + active-server tracking
     │   ├── StatsBroadcaster.java      # @Scheduled(2s) stats emit
-    │   └── SessionBackpressure.java   # Send wrapper — evicts sessions whose send fails
+    │   ├── SessionBackpressure.java   # Send wrapper — evicts sessions whose send fails
+    │   └── ReplayBuffer.java          # Per-topic ring of recent events, replayed on subscribe
     ├── websocket/
     │   ├── WebSocketConfig.java       # /ws/logs endpoint, container limits, handshake interceptor
-    │   ├── LogWebSocketHandler.java   # Lifecycle + action dispatch (subscribe/filter/clear-filters)
-    │   ├── WebSocketSessionRegistry.java # ConcurrentHashMap session/subscription/filter store
+    │   ├── LogWebSocketHandler.java   # Lifecycle + action dispatch (subscribe/filter/clear-filters/refresh)
+    │   ├── WebSocketSessionRegistry.java # ConcurrentHashMap session/subscription/filter store, per-user cap
+    │   ├── SessionExpirySweeper.java  # @Scheduled(60s) closes sessions with expired/missing-expiry JWTs
     │   └── dto/
-    │       ├── WsClientMessage.java       # Sealed: Subscribe | Filter | ClearFilters
+    │       ├── WsClientMessage.java       # Sealed: Subscribe | Filter | ClearFilters | Refresh
     │       ├── ClientFilterRequest.java   # Raw inbound filter → sanitized ClientFilter
     │       ├── TopicsListMessage.java     # Greeting payload
     │       ├── StatsMessage.java          # Stats payload
@@ -194,6 +207,8 @@ All config is externalized via environment variables with sensible dev defaults.
 | `KAFKA_MAX_POLL_RECORDS` | `500` | Max Kafka records per batch poll |
 | `LOGSTREAM_TOPICS` | `server-topic,system-topic,...` | Comma-separated topics to subscribe |
 | `LOGSTREAM_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed WebSocket and REST API origin |
+| `LOGSTREAM_MAX_SESSIONS_PER_USER` | `5` | Max concurrent WS sessions per JWT subject; `0` disables the cap |
+| `LOGSTREAM_REPLAY_BUFFER_SIZE` | `500` | Events kept per topic for replay on subscribe; `0` disables replay |
 | `JVM_MAX_HEAP` | `512m` | JVM max heap size (Docker only) |
 | `LOGSTREAM_LOG_DIR` | — | Directory containing download files. Files must be named `{topic}.log`, with the topic included in `LOGSTREAM_TOPICS`. |
 | `SSO_JWKS_URI` | — | JWKS endpoint for JWT validation (prod profile). |

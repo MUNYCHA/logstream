@@ -72,13 +72,30 @@ class SessionExpirySweeperTest {
     }
 
     @Test
-    void leavesSessionWithoutJwtAttributeAlone() throws Exception {
+    void closesSessionWhoseTokenHasNoExpiry() throws Exception {
+        Map<String, Object> attributes = new HashMap<>();
+        attributes.put("jwt", Jwt.withTokenValue("token")
+                .header("alg", "RS256")
+                .subject("alice")
+                .build());
+        WebSocketSession session = mockSession("s1", attributes);
+        registry.add(session, "alice");
+
+        sweeper.closeExpiredSessions();
+
+        verify(session).close(argThat(status ->
+                status.getCode() == CloseStatus.POLICY_VIOLATION.getCode()));
+    }
+
+    @Test
+    void closesSessionWithoutJwtAttribute() throws Exception {
         WebSocketSession session = mockSession("s1", new HashMap<>());
         registry.add(session, "alice");
 
         sweeper.closeExpiredSessions();
 
-        verify(session, never()).close(any(CloseStatus.class));
+        verify(session).close(argThat(status ->
+                status.getCode() == CloseStatus.POLICY_VIOLATION.getCode()));
     }
 
     @Test

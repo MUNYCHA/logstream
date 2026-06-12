@@ -64,7 +64,7 @@ streaming/
 - **`StatsBroadcaster.flushStats`** (`@Scheduled`, 2s) — atomic-swap drain of `StatsAccumulator`, fans `StatsMessage` to all sessions.
 - **`SessionBackpressure.send`** — delegates to the `ConcurrentWebSocketSessionDecorator`-wrapped session (wrapped in `WebSocketSessionRegistry.add`); removes the session if the send throws.
 - **Tomcat WS threads** — handle inbound actions in `LogWebSocketHandler`; on subscribe they read `ReplayBuffer` (synchronized per-topic ring, single writer = flush thread) and send history through the decorated session.
-- **`SessionExpirySweeper.closeExpiredSessions`** (`@Scheduled`, 60s) — closes sessions whose stored `jwt` attribute has expired (`1008 Token expired`).
+- **`SessionExpirySweeper.closeExpiredSessions`** (`@Scheduled`, 60s) — closes sessions unless the stored `jwt` attribute has an expiry provably in the future (`1008 Token expired`).
 - All shared state in `ConcurrentHashMap` — safe for concurrent access.
 
 ## Performance Rules (DO NOT REGRESS)
@@ -80,9 +80,9 @@ streaming/
 ## Auth
 
 - REST: `oauth2ResourceServer().jwt()` — bearer token required on every path except `/actuator/health` and `/ws/**` (which is gated by the handshake interceptor instead).
-- WS: `JwtHandshakeInterceptor` validates `bearer.<jwt>` from `Sec-WebSocket-Protocol` at handshake. Failure -> 401, no upgrade. JWT + subject stashed in handshake attributes.
+- WS: `JwtHandshakeInterceptor` validates `bearer.<jwt>` from `Sec-WebSocket-Protocol` at handshake. Failure or missing `sub` claim -> 401, no upgrade (fail closed — every session must have a subject). JWT + subject stashed in handshake attributes.
 - WS session cap: `WebSocketSessionRegistry.add(session, subject)` atomically enforces `logstream.max-sessions-per-user` per JWT subject; over-cap connections are closed with `1008 Session limit reached` in `LogWebSocketHandler`.
-- WS token expiry: a session lives only as long as its JWT. Clients push silently-renewed tokens via the `refresh` action; `LogWebSocketHandler.handleRefresh` validates the token, requires the same subject as the handshake, and replaces the session's `jwt` attribute. `SessionExpirySweeper` (60s) closes lapsed sessions with `1008 Token expired`; the UI reconnects with a fresh token.
+- WS token expiry: a session lives only as long as its JWT. Clients push silently-renewed tokens via the `refresh` action; `LogWebSocketHandler.handleRefresh` validates the token, requires the same subject as the handshake, and replaces the session's `jwt` attribute. `SessionExpirySweeper` (60s) closes sessions whose stored token is expired, has no `exp` claim, or is missing (fail closed) with `1008 Token expired`; the UI reconnects with a fresh token.
 - JWKS URI: `SSO_JWKS_URI` env var → `spring.security.oauth2.resourceserver.jwt.jwk-set-uri`.
 
 ## Error Handling

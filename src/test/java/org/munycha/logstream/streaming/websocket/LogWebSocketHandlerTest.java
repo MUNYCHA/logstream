@@ -92,6 +92,18 @@ class LogWebSocketHandlerTest {
     }
 
     @Test
+    void refreshOnSessionWithoutSubjectIsRejected() {
+        when(jwtDecoder.decode("any-token")).thenReturn(jwt("alice"));
+        // No "subject" attribute — must fail closed, never adopt the token's identity.
+        Map<String, Object> attributes = new HashMap<>();
+        WebSocketSession session = mockSession("s1", attributes);
+
+        sendRefresh(session, "any-token");
+
+        assertEquals(null, attributes.get("jwt"));
+    }
+
+    @Test
     void invalidRefreshTokenIsIgnored() {
         when(jwtDecoder.decode("bad-token")).thenThrow(new JwtException("invalid signature"));
         Map<String, Object> attributes = new HashMap<>();
