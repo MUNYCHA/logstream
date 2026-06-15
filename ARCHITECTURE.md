@@ -24,16 +24,24 @@ Thread: scheduling-1 (Spring @Scheduled — LogBroadcastService.flush)
   │  → for each event:
   │        statsAccumulator.record(evt)   ← stats accumulators
   │        metaStore.record(evt)          ← server/path snapshots
-  │  → for each session:
-  │        filter events against subscriptions + ClientFilter
-  │        serialize matched events (array or single)
-  │        sessionBackpressure.send(session, message)
+  │        replayBuffer.record(evt)       ← per-topic history ring
+  │  → group sessions by DispatchKey(subscriptions copy, filter)
+  │  → for each group:
+  │        filter events against the group's subscriptions + ClientFilter
+  │        serialize matched events ONCE (array or single), share the TextMessage
+  │        sessionBackpressure.send(session, message) for each session in the group
   │
 Thread: scheduling-2 (Spring @Scheduled — StatsBroadcaster.flushStats, every 2s)
   │
   │  → statsAccumulator.drain() (atomic swap)
   │  → build StatsMessage
   │  → for each session: sessionBackpressure.send(session, message)
+  │
+Thread: scheduling-N (Spring @Scheduled — SessionExpirySweeper.closeExpiredSessions, every 60s)
+  │
+  │  → for each session: close with 1008 "Token expired" unless the stored jwt
+  │    attribute has an expiry provably in the future (fail closed: missing
+  │    token or missing exp claim also closes)
   │
   ▼
 SessionBackpressure (shared by both flush paths)
@@ -49,19 +57,21 @@ WebSocket Clients
 ### Key threading rules
 - **Kafka consumer thread**: Only enqueues; never blocks on WebSocket I/O.
 - **Two scheduled threads** (`flush` 100ms, `flushStats` 2s) both route sends through `SessionBackpressure`. Concurrency and slow-client isolation are handled by the `ConcurrentWebSocketSessionDecorator` each session is wrapped in at registration — a stuck client never blocks the schedulers.
-- **Tomcat WS threads**: Handle inbound client messages (subscribe/filter/clear) in `LogWebSocketHandler` — parsed via Jackson into the sealed `WsClientMessage`.
+- **Tomcat WS threads**: Handle inbound client messages (subscribe/filter/clear-filters/refresh) in `LogWebSocketHandler` — parsed via Jackson into the sealed `WsClientMessage`. On subscribe they also read `ReplayBuffer` (per-topic synchronized ring; single writer = flush thread) and send history through the decorated session.
+- **Sweeper thread** (`closeExpiredSessions` 60s): closes sessions whose stored JWT can't be proven valid — expired, no `exp`, or no token at all.
 - **Session registry**: All `ConcurrentHashMap` — safe for concurrent reads from flush threads + writes from WS threads.
 
-## Broadcast Pipeline (4-component split)
+## Broadcast Pipeline (5-component split)
 
-The broadcast feature is split across four cooperating classes — each with one responsibility — so the hot path stays narrow.
+The broadcast feature is split across five cooperating classes — each with one responsibility — so the hot path stays narrow.
 
 | Class | Role | Trigger |
 |---|---|---|
-| `LogBroadcastService` | Enqueue (called from Kafka thread) + 100ms flush of matched events to subscribed sessions. | `@KafkaListener` callback + `@Scheduled(fixedDelay = 100)` |
+| `LogBroadcastService` | Enqueue (called from Kafka thread) + 100ms flush. Groups sessions by identical (subscriptions, filter); each group's events are matched and serialized once. | `@KafkaListener` callback + `@Scheduled(fixedDelay = 100)` |
 | `StatsAccumulator` | Per-topic `LongAdder` counters + active-server `Set<String>`. Atomic swap on drain. | Called by `LogBroadcastService.flush` for every drained event |
 | `StatsBroadcaster` | Drains the accumulator, builds a `StatsMessage`, fans out to every session. | `@Scheduled(fixedDelay = 2000)` |
 | `SessionBackpressure` | Sends to the decorator-wrapped session; evicts sessions whose send throws. Slow clients are buffered then closed by the decorator. | Called by both schedulers |
+| `ReplayBuffer` | Last N events per topic (global sequence for cross-topic ordering), replayed to newly subscribed sessions. `LOGSTREAM_REPLAY_BUFFER_SIZE` (default 500); `0` disables. | Written by `flush` for every drained event; read on subscribe |
 
 `TopicMetaStore` (under `streaming/topic/`) is updated from the same `flush` loop — it holds per-server, per-path counters and last-seen timestamps queried by the REST meta endpoint.
 
@@ -73,13 +83,14 @@ Kafka broker
   → Each LogEvent enqueued to ConcurrentLinkedQueue
   ...~100ms later (LogBroadcastService.flush)...
   → Drain queue into List<LogEvent>
-  → For each event: statsAccumulator.record + metaStore.record
-  → For each WebSocketSession:
-      → Check topic subscription (sessionRegistry.isSubscribed)
-      → Check ClientFilter (filterEngine.matches)
-      → Collect matched events into per-session list
-      → Serialize: 1 event → single JSON object, 2+ events → JSON array
-      → sessionBackpressure.send(session, TextMessage)
+  → For each event: statsAccumulator.record + metaStore.record + replayBuffer.record
+  → Group sessions by DispatchKey(Set.copyOf(subscriptions), filter)
+      (sessions without subscriptions are skipped — no logs until subscribe)
+  → For each group:
+      → Match events against the group's topics + ClientFilter (filterEngine.matches)
+      → Serialize ONCE per ≤100-event chunk: 1 event → single JSON object, 2+ → JSON array
+      → Share the immutable TextMessage across the group:
+          sessionBackpressure.send(session, TextMessage) for each member
           → session.sendMessage() (decorator buffers; never blocks the scheduler)
   → Client receives JSON frame
 ```
@@ -132,13 +143,13 @@ sealed interface WsClientMessage permits Subscribe, Filter, ClearFilters, Refres
 
 | Action | Handler | Side effect |
 |---|---|---|
-| `Subscribe(topics)` | `handleSubscribe` | Intersects requested topics with allowlist, calls `sessionRegistry.subscribe` |
+| `Subscribe(topics)` | `handleSubscribe` | Intersects requested topics with allowlist, calls `sessionRegistry.subscribe`, then replays `ReplayBuffer` history for newly subscribed topics (subscribe-before-replay, so no live event is lost; unfiltered, same frame shapes as live, ≤100 events per frame) |
 | `Filter(filters)` | `handleFilter` | Converts `ClientFilterRequest` → sanitized `ClientFilter`, calls `sessionRegistry.setFilter` |
 | `ClearFilters()` | `handleClearFilters` | `sessionRegistry.setFilter(session, ClientFilter.EMPTY)` |
 | `Refresh(token)` | `handleRefresh` | Decodes the renewed JWT, requires the handshake subject, replaces the session's `jwt` attribute |
 
 ### Connection lifecycle
-- `afterConnectionEstablished`: register session (registry returns the decorator-wrapped session), send `TopicsListMessage` greeting (`{"type":"topics","topics":[...]}`) through the wrapped session.
+- `afterConnectionEstablished`: register via `sessionRegistry.add(session, subject)` (the subject comes from the handshake attributes). The registry returns the decorator-wrapped session, or `null` when the subject is at the per-user cap — then the connection is closed with `1008 Session limit reached`. On success, send the `TopicsListMessage` greeting (`{"type":"topics","topics":[...]}`) through the wrapped session.
 - `afterConnectionClosed`: `sessionRegistry.remove(session)`.
 
 ## Session Registry (`WebSocketSessionRegistry`)
@@ -147,13 +158,15 @@ sealed interface WsClientMessage permits Subscribe, Filter, ClearFilters, Refres
 Map<String, WebSocketSession> sessions      // sessionId → decorator-wrapped session
 Map<String, Set<String>> subscriptions      // sessionId → topic set
 Map<String, ClientFilter> filters           // sessionId → filter (absent = EMPTY)
+Map<String, Set<String>> subjectSessions    // subject → live session ids (per-user cap)
+Map<String, String> sessionSubjects         // sessionId → subject (for cleanup)
 ```
 
 | Method | Thread safety | Notes |
 |---|---|---|
-| `add(session)` | Map put | Wraps in `ConcurrentWebSocketSessionDecorator` (5s/2MB limits), returns the wrapped session. Tomcat WS thread |
-| `remove(session)` | Map removes by id | Accepts raw or wrapped instance. WS thread or backpressure (on send failure) |
-| `subscribe(session, topics)` | Atomic replace | Replaces all subscriptions |
+| `add(session, subject)` | Cap claim inside a single `compute` + map put | Atomically reserves a per-subject slot (`logstream.max-sessions-per-user`; `0` disables), wraps in `ConcurrentWebSocketSessionDecorator` (5s/2MB limits), returns the wrapped session — or `null` when the cap is hit (caller closes). Tomcat WS thread |
+| `remove(session)` | Map removes by id | Accepts raw or wrapped instance; releases the subject slot. WS thread or backpressure (on send failure) |
+| `subscribe(session, topics)` | Atomic replace | Replaces all subscriptions; returns the previous set so the handler can replay only newly added topics |
 | `isSubscribed(session, topic)` | Map get + set contains | Hot path in flush |
 | `setFilter(session, filter)` | Map put (or remove if empty) | Hot path on filter messages |
 | `getFilter(session)` | Map getOrDefault(EMPTY) | Hot path in flush |
@@ -169,12 +182,13 @@ Map<String, ClientFilter> filters           // sessionId → filter (absent = EM
 ### WebSocket (`JwtHandshakeInterceptor`)
 - Reads `bearer.<jwt>` from the offered `Sec-WebSocket-Protocol` values; the client also offers `logstream.v1`, which the server selects.
 - Calls `jwtDecoder.decode(token)`; on failure → respond `401`, abort upgrade.
+- **Fail closed on a subject-less token**: a validly signed JWT with no (or blank) `sub` claim is also rejected with `401` — the session cap and the refresh identity check both key on the subject, so a session must never exist without one.
 - On success, stashes the `Jwt` and `subject` in the handshake attributes for downstream access.
 
 ### Session lifetime (`SessionExpirySweeper`)
 - The handshake validates the token once, but access tokens are short-lived (~5 min) — without further checks a session would stream for hours after its authorization lapsed.
-- Clients push silently-renewed tokens in-band via `{"action":"refresh","token":...}`; `handleRefresh` validates the token and rejects any subject other than the one that authenticated the handshake, then replaces the `jwt` attribute.
-- `SessionExpirySweeper` (`@Scheduled`, 60s) closes any session whose stored `jwt` has expired with `1008 Token expired`. The UI treats that close like any other drop: reconnect with a freshly renewed token.
+- Clients push silently-renewed tokens in-band via `{"action":"refresh","token":...}`; `handleRefresh` validates the token and rejects any subject other than the one that authenticated the handshake (fail closed: a session with no stored subject rejects every refresh), then replaces the `jwt` attribute.
+- `SessionExpirySweeper` (`@Scheduled`, 60s) closes sessions with `1008 Token expired` unless the stored `jwt` attribute has an expiry provably in the future — an expired token, a token without an `exp` claim, and a missing token all close the session (fail closed). The UI treats that close like any other drop: reconnect with a freshly renewed token.
 
 ## Error Handling
 
@@ -201,7 +215,7 @@ Four ordered checks before serving a file:
 3. **File state** — `Files.exists` + `Files.isRegularFile` (rejects directories, devices, FIFOs)
 4. **Symlink boundary** — `toRealPath()` re-resolved against `base.toRealPath()` (catches symlinks pointing outside the base dir)
 
-Any failure → `LogFileNotFoundException` (or `InvalidTopicException` for malformed input). The controller is just headers + `Files.copy`.
+Any failure → `LogFileNotFoundException` (or `InvalidTopicException` for malformed input). The controller is just headers + `Files.copy`, and scrubs the `Content-Disposition` filename (`[^a-zA-Z0-9._-]` → `_`) as defense-in-depth.
 
 ## Configuration
 
@@ -222,6 +236,12 @@ Any failure → `LogFileNotFoundException` (or `InvalidTopicException` for malfo
 | Listener type | `batch` | Receives `List<LogEvent>` |
 | Trusted packages | `org.munycha.logstream.streaming.kafka` | JsonDeserializer security |
 | Default value type | `LogEvent` | Auto-deserialize |
+
+### Logstream properties (`LogstreamProperties`)
+| Setting | Default | Purpose |
+|---|---|---|
+| `logstream.max-sessions-per-user` | 5 | Per-JWT-subject WS session cap; `0` disables. Over-cap → `1008 Session limit reached` |
+| `logstream.replay-buffer-size` | 500 | Events kept per topic for replay on subscribe; `0` disables replay |
 
 ### Thread pool (`AsyncConfig`)
 | Setting | Value |
@@ -253,6 +273,8 @@ record ClientFilter(String server, String path, String search,
 ```
 Server → Client:
   Greeting:     { "type": "topics", "topics": [...] }                   (once on connect)
+  Replay:       same shapes as Single/Batched — buffered history for newly
+                subscribed topics, sent right after subscribe; unfiltered
   Single event: { "serverName", "path", "topic", "timestamp", "message" }
   Batched:      [ { ... }, { ... }, ... ]                                (every ~100ms)
   Stats:        { "type": "stats", "topics": { topic: { rate, servers } }, "intervalMs": 2000 }
@@ -322,17 +344,19 @@ src/main/java/org/munycha/logstream/
     │   └── ClientFilter.java               # Filter record + EMPTY + sanitize()
     │
     ├── broadcast/
-    │   ├── LogBroadcastService.java        # Enqueue + 100ms flush
+    │   ├── LogBroadcastService.java        # Enqueue + 100ms flush (group serialization)
     │   ├── StatsAccumulator.java           # Per-topic counters, atomic-swap drain
     │   ├── StatsBroadcaster.java           # @Scheduled(2s) stats emit
-    │   └── SessionBackpressure.java        # Send wrapper; evicts sessions on send failure
+    │   ├── SessionBackpressure.java        # Send wrapper; evicts sessions on send failure
+    │   └── ReplayBuffer.java               # Per-topic ring of recent events, replayed on subscribe
     │
     ├── websocket/
     │   ├── WebSocketConfig.java            # /ws/logs registration, container limits
     │   ├── LogWebSocketHandler.java        # Lifecycle + sealed-message dispatch
-    │   ├── WebSocketSessionRegistry.java   # Sessions / subscriptions / filters
+    │   ├── WebSocketSessionRegistry.java   # Sessions / subscriptions / filters / per-user cap
+    │   ├── SessionExpirySweeper.java       # @Scheduled(60s) closes sessions w/o provably valid JWT
     │   └── dto/
-    │       ├── WsClientMessage.java            # Sealed: Subscribe | Filter | ClearFilters
+    │       ├── WsClientMessage.java            # Sealed: Subscribe | Filter | ClearFilters | Refresh
     │       ├── ClientFilterRequest.java        # Raw inbound filter → sanitized
     │       ├── TopicsListMessage.java          # Greeting payload
     │       ├── StatsMessage.java               # Stats payload

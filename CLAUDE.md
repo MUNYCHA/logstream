@@ -21,7 +21,7 @@ docker compose up -d              # standalone backend container only
 
 ## Stack
 
-Java 17, Spring Boot 3.5.x, Maven 3.9.x (wrapper), Spring Security (OAuth2 resource server / JWT), Spring WebSocket (native `TextWebSocketHandler`, not STOMP), Spring Kafka (batch `JsonDeserializer`), Spring Boot Actuator (prod only).
+Java 17, Spring Boot 3.5.x, Maven 3.9.x (wrapper), Spring Security (OAuth2 resource server / JWT), Spring WebSocket (native `TextWebSocketHandler`, not STOMP), Spring Kafka (batch `JsonDeserializer`), Spring Boot Actuator (always on the classpath; `/actuator/health` exposed in all profiles, explicit exposure config only in prod).
 
 ## Package Layout (feature-based)
 

@@ -110,7 +110,7 @@ The signing keys are fetched from `SSO_JWKS_URI`. `GET /actuator/health` is the 
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/logs/download?topic={topic}` | Streams `{topic}.log` from `LOGSTREAM_LOG_DIR` as `text/plain`. Path-security hardened: allowlist + lexical + symlink-resolved checks. |
+| `GET` | `/api/logs/download?topic={topic}` | Streams `{topic}.log` from `LOGSTREAM_LOG_DIR` as `text/plain`. Path-security hardened: allowlist + lexical + symlink-resolved checks; the `Content-Disposition` filename is scrubbed (`[^a-zA-Z0-9._-]` → `_`). |
 | `GET` | `/api/topics/{topic}/meta` | Per-topic snapshot: each server + its paths with event counts and last-seen timestamp. 30s cache. |
 | `GET` | `/actuator/health` | Health check (prod profile only, unauthenticated). |
 
