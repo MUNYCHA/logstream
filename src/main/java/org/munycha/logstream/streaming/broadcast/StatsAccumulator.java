@@ -1,6 +1,6 @@
 package org.munycha.logstream.streaming.broadcast;
 
-import org.munycha.logstream.streaming.kafka.LogEvent;
+import org.munycha.logstream.streaming.redis.LogEvent;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;

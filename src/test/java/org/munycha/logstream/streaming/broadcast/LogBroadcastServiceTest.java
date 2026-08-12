@@ -7,7 +7,7 @@ import org.mockito.ArgumentCaptor;
 import org.munycha.logstream.common.config.LogstreamProperties;
 import org.munycha.logstream.streaming.filter.ClientFilter;
 import org.munycha.logstream.streaming.filter.LogFilterEngine;
-import org.munycha.logstream.streaming.kafka.LogEvent;
+import org.munycha.logstream.streaming.redis.LogEvent;
 import org.munycha.logstream.streaming.topic.TopicMetaStore;
 import org.munycha.logstream.streaming.websocket.WebSocketSessionRegistry;
 import org.springframework.web.socket.TextMessage;

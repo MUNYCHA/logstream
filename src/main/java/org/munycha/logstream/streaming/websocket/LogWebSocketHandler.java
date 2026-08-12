@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.munycha.logstream.common.config.LogstreamProperties;
 import org.munycha.logstream.streaming.broadcast.ReplayBuffer;
 import org.munycha.logstream.streaming.filter.ClientFilter;
-import org.munycha.logstream.streaming.kafka.LogEvent;
+import org.munycha.logstream.streaming.redis.LogEvent;
 import org.munycha.logstream.streaming.websocket.dto.TopicsListMessage;
 import org.munycha.logstream.streaming.websocket.dto.WsClientMessage;
 import org.slf4j.Logger;

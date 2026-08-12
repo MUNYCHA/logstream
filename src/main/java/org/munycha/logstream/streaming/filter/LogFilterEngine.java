@@ -1,6 +1,6 @@
 package org.munycha.logstream.streaming.filter;
 
-import org.munycha.logstream.streaming.kafka.LogEvent;
+import org.munycha.logstream.streaming.redis.LogEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;

@@ -2,7 +2,7 @@ package org.munycha.logstream.streaming.filter;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.munycha.logstream.streaming.kafka.LogEvent;
+import org.munycha.logstream.streaming.redis.LogEvent;
 
 import java.time.Instant;
 import java.util.List;

@@ -1,6 +1,6 @@
 package org.munycha.logstream.streaming.topic;
 
-import org.munycha.logstream.streaming.kafka.LogEvent;
+import org.munycha.logstream.streaming.redis.LogEvent;
 import org.munycha.logstream.streaming.topic.dto.TopicMetaResponse;
 import org.springframework.stereotype.Service;
 

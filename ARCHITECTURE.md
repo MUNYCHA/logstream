@@ -7,11 +7,13 @@ Deep implementation reference. CLAUDE.md links here for details.
 ## Threading Model
 
 ```
-Thread: kafka-consumer-0 (Spring Kafka listener thread)
+Thread: redis-subscriber (RedisMessageListenerContainer task executor)
   │
-  │  KafkaLogConsumer.consume(List<LogEvent>)
-  │    → for each event: broadcastService.broadcast(event)
-  │    → broadcast() = incomingQueue.add(event)  ← NON-BLOCKING, never stalls Kafka
+  │  RedisLogSubscriber.onMessage(Message, byte[])
+  │    → deserialize the message body into a single LogEvent (pub/sub has no
+  │      native batch concept — one message in, one broadcast() call out)
+  │    → broadcastService.broadcast(event)
+  │    → broadcast() = incomingQueue.add(event)  ← NON-BLOCKING, never stalls the subscriber
   │
   ▼
 ConcurrentLinkedQueue<LogEvent> incomingQueue
@@ -55,7 +57,7 @@ WebSocket Clients
 ```
 
 ### Key threading rules
-- **Kafka consumer thread**: Only enqueues; never blocks on WebSocket I/O.
+- **Redis subscriber thread**: Only enqueues; never blocks on WebSocket I/O.
 - **Two scheduled threads** (`flush` 100ms, `flushStats` 2s) both route sends through `SessionBackpressure`. Concurrency and slow-client isolation are handled by the `ConcurrentWebSocketSessionDecorator` each session is wrapped in at registration — a stuck client never blocks the schedulers.
 - **Tomcat WS threads**: Handle inbound client messages (subscribe/filter/clear-filters/refresh) in `LogWebSocketHandler` — parsed via Jackson into the sealed `WsClientMessage`. On subscribe they also read `ReplayBuffer` (per-topic synchronized ring; single writer = flush thread) and send history through the decorated session.
 - **Sweeper thread** (`closeExpiredSessions` 60s): closes sessions whose stored JWT can't be proven valid — expired, no `exp`, or no token at all.
@@ -67,7 +69,7 @@ The broadcast feature is split across five cooperating classes — each with one
 
 | Class | Role | Trigger |
 |---|---|---|
-| `LogBroadcastService` | Enqueue (called from Kafka thread) + 100ms flush. Groups sessions by identical (subscriptions, filter); each group's events are matched and serialized once. | `@KafkaListener` callback + `@Scheduled(fixedDelay = 100)` |
+| `LogBroadcastService` | Enqueue (called from the Redis subscriber thread) + 100ms flush. Groups sessions by identical (subscriptions, filter); each group's events are matched and serialized once. | `RedisLogSubscriber.onMessage` callback + `@Scheduled(fixedDelay = 100)` |
 | `StatsAccumulator` | Per-topic `LongAdder` counters + active-server `Set<String>`. Atomic swap on drain. | Called by `LogBroadcastService.flush` for every drained event |
 | `StatsBroadcaster` | Drains the accumulator, builds a `StatsMessage`, fans out to every session. | `@Scheduled(fixedDelay = 2000)` |
 | `SessionBackpressure` | Sends to the decorator-wrapped session; evicts sessions whose send throws. Slow clients are buffered then closed by the decorator. | Called by both schedulers |
@@ -78,9 +80,9 @@ The broadcast feature is split across five cooperating classes — each with one
 ## Message Lifecycle (End-to-End)
 
 ```
-Kafka broker
-  → KafkaLogConsumer receives batch (up to 500 records)
-  → Each LogEvent enqueued to ConcurrentLinkedQueue
+Redis broker
+  → RedisLogSubscriber receives one message per channel publish
+  → LogEvent enqueued to ConcurrentLinkedQueue
   ...~100ms later (LogBroadcastService.flush)...
   → Drain queue into List<LogEvent>
   → For each event: statsAccumulator.record + metaStore.record + replayBuffer.record
@@ -228,14 +230,15 @@ Any failure → `LogFileNotFoundException` (or `InvalidTopicException` for malfo
 | CORS origins | From `logstream.allowed-origins` | |
 | Handshake interceptor | `JwtHandshakeInterceptor` | JWT validation before upgrade |
 
-### Kafka consumer (`application.yaml`)
+### Redis config (`RedisConfig`)
 | Setting | Value | Purpose |
 |---|---|---|
-| `max.poll.records` | 500 | Batch size per poll |
-| `auto-offset-reset` | `latest` | Only stream new events |
-| Listener type | `batch` | Receives `List<LogEvent>` |
-| Trusted packages | `org.munycha.logstream.streaming.kafka` | JsonDeserializer security |
-| Default value type | `LogEvent` | Auto-deserialize |
+| Connection factory | Auto-configured Lettuce `RedisConnectionFactory` from `spring.data.redis.{host,port,password}` | No manual factory bean — relies on Boot auto-config |
+| Channel subscription | One `ChannelTopic` per `logstream.topics` entry, registered on `RedisMessageListenerContainer` | Mirrors the old one-Kafka-topic-per-log-topic model |
+| Serializer | `Jackson2JsonRedisSerializer<LogEvent>` | Deserializes published JSON into `LogEvent` |
+| `logstream.redis.listener-auto-startup` | `true` (default) | Toggle to disable the listener container in tests |
+
+**Delivery semantics**: plain pub/sub is fire-and-forget — no persistence, no consumer-group offsets, no broker-side backlog. If the app is down or the subscriber briefly disconnects, events published during that window are lost with no redelivery. This is a deliberate, accepted tradeoff (not Redis Streams). `ReplayBuffer` is unaffected — it's an in-memory, broker-agnostic ring buffer that only ever replays events the app already received live.
 
 ### Logstream properties (`LogstreamProperties`)
 | Setting | Default | Purpose |
@@ -253,7 +256,7 @@ Any failure → `LogFileNotFoundException` (or `InvalidTopicException` for malfo
 
 ## Data Models
 
-### `LogEvent` (record, `streaming/kafka`)
+### `LogEvent` (record, `streaming/redis`)
 ```java
 record LogEvent(String serverName, String path, String topic, String timestamp, String message)
 // isValid() — all fields non-blank except message which may be empty but not null
@@ -323,7 +326,8 @@ src/main/java/org/munycha/logstream/
 │   ├── config/
 │   │   ├── AsyncConfig.java                # ThreadPoolTaskExecutor (4-8 threads, 10k queue)
 │   │   ├── CorsConfig.java                 # HTTP CORS for /api/**
-│   │   └── LogstreamProperties.java        # @ConfigurationProperties("logstream")
+│   │   ├── LogstreamProperties.java        # @ConfigurationProperties("logstream")
+│   │   └── RedisConfig.java                # RedisMessageListenerContainer, per-topic channel subscription
 │   └── exception/
 │       ├── ApiError.java                   # Uniform error response record
 │       ├── GlobalExceptionHandler.java     # @RestControllerAdvice
@@ -335,8 +339,8 @@ src/main/java/org/munycha/logstream/
 │   └── JwtHandshakeInterceptor.java        # WS bearer subprotocol validation
 │
 └── streaming/
-    ├── kafka/
-    │   ├── KafkaLogConsumer.java           # Batch @KafkaListener
+    ├── redis/
+    │   ├── RedisLogSubscriber.java         # MessageListener, one channel per logstream.topics entry
     │   └── LogEvent.java
     │
     ├── filter/
@@ -373,7 +377,7 @@ src/main/java/org/munycha/logstream/
             └── TopicMetaResponse.java      # Nested ServerEntry / PathEntry
 
 src/main/resources/
-├── application.yaml                        # Base: app name, Kafka consumer, lifecycle
-├── application-dev.yaml                    # Dev: hardcoded Kafka broker, topics, CORS
+├── application.yaml                        # Base: app name, lifecycle
+├── application-dev.yaml                    # Dev: local Redis host, topics, CORS
 └── application-prod.yaml                   # Prod: all values from env vars + SSO_JWKS_URI + actuator
 ```

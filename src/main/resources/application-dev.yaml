@@ -5,11 +5,10 @@ spring:
   config:
     activate:
       on-profile: dev
-  kafka:
-    bootstrap-servers: 172.27.12.202:9092
-    consumer:
-      group-id: log-dashboard
-      max-poll-records: 500
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
 
 logstream:
   topics: server-topic,system-topic,app1-topic,app2-topic,app3-topic,app4-topic

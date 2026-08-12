@@ -7,9 +7,9 @@ services:
       - ${LOGSTREAM_LOG_DIR}:${LOGSTREAM_LOG_DIR}:ro
     environment:
       SPRING_PROFILES_ACTIVE: prod
-      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
-      KAFKA_CONSUMER_GROUP_ID: ${KAFKA_CONSUMER_GROUP_ID:-log-dashboard}
-      KAFKA_MAX_POLL_RECORDS: ${KAFKA_MAX_POLL_RECORDS:-500}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       LOGSTREAM_TOPICS: ${LOGSTREAM_TOPICS}
       LOGSTREAM_ALLOWED_ORIGINS: ${LOGSTREAM_ALLOWED_ORIGINS}
       LOGSTREAM_LOG_DIR: ${LOGSTREAM_LOG_DIR}
@@ -30,6 +30,16 @@ services:
       options:
         max-size: "50m"
         max-file: "5"
+    restart: unless-stopped
+    networks:
+      - monitoring
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    expose:
+      - "6379"
     restart: unless-stopped
     networks:
       - monitoring

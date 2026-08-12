@@ -2,7 +2,7 @@ package org.munycha.logstream.streaming.broadcast;
 
 import org.junit.jupiter.api.Test;
 import org.munycha.logstream.common.config.LogstreamProperties;
-import org.munycha.logstream.streaming.kafka.LogEvent;
+import org.munycha.logstream.streaming.redis.LogEvent;
 
 import java.util.List;
 import java.util.Set;

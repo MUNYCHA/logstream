@@ -1,11 +1,11 @@
 # Logstream
 
-A real-time log streaming bridge between **Kafka** and **WebSocket** clients, built with Spring Boot 3. Also exposes a REST API for log file downloads and per-topic metadata, secured with JWT bearer auth.
+A real-time log streaming bridge between **Redis pub/sub** and **WebSocket** clients, built with Spring Boot 3. Also exposes a REST API for log file downloads and per-topic metadata, secured with JWT bearer auth.
 
 ## How It Works
 
 ```
-Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched flush)  →  WebSocket Clients
+Redis Channels  →  RedisLogSubscriber  →  LogBroadcastService (batched flush)  →  WebSocket Clients
                                        │
                                        ├──→ StatsAccumulator (per-topic rate + servers)
                                        │      └──→ StatsBroadcaster (every 2s) ──→ all sessions
@@ -15,7 +15,7 @@ Kafka Topics  →  KafkaLogConsumer  →  LogBroadcastService (batched flush)  �
                                        └──→ TopicMetaStore (server/path snapshots, queried via REST)
 ```
 
-1. Kafka consumer subscribes to configured topics and enqueues events (non-blocking)
+1. Redis subscriber subscribes to one channel per configured topic and enqueues events (non-blocking). Delivery is fire-and-forget — no persistence or backlog, so events published while the app is down or briefly disconnected are lost (this is an accepted tradeoff of plain pub/sub).
 2. Every 100ms, the broadcast service flushes the queue. Sessions are grouped by identical (**topic subscriptions**, **filters** — server, path, text search, keywords, time range); each group's matched events are serialized once and sent as a single JSON object or a batched array.
 3. In parallel, accumulator updates per-topic rate counters and active-server sets. Every 2s a `stats` message is fanned out to every session.
 4. On connect, the client receives a one-shot `topics` greeting listing the configured topics. On subscribe, the last ~500 buffered events per newly subscribed topic are replayed so the panel isn't blank, then live events follow.
@@ -135,7 +135,7 @@ All errors return a consistent shape:
 | Spring Boot | 3.5.x |
 | Spring Security | OAuth2 resource server (JWT) |
 | Spring WebSocket | Native `TextWebSocketHandler` (not STOMP) |
-| Spring Kafka | Batch listener, JSON deserializer |
+| Spring Data Redis | Lettuce, pub/sub via `RedisMessageListenerContainer` |
 | Maven | 3.9.x (via wrapper) |
 
 ## Project Structure
@@ -150,7 +150,8 @@ src/main/java/org/munycha/logstream/
 │   ├── config/
 │   │   ├── AsyncConfig.java           # @EnableAsync + @EnableScheduling, bounded ThreadPoolTaskExecutor
 │   │   ├── CorsConfig.java            # HTTP CORS for /api/**
-│   │   └── LogstreamProperties.java   # @ConfigurationProperties("logstream")
+│   │   ├── LogstreamProperties.java   # @ConfigurationProperties("logstream")
+│   │   └── RedisConfig.java           # RedisMessageListenerContainer, per-topic channel subscription
 │   └── exception/
 │       ├── ApiError.java              # Uniform error response record
 │       ├── GlobalExceptionHandler.java  # @RestControllerAdvice
@@ -162,8 +163,8 @@ src/main/java/org/munycha/logstream/
 │   └── JwtHandshakeInterceptor.java   # Validates bearer JWT WS subprotocol
 │
 └── streaming/
-    ├── kafka/
-    │   ├── KafkaLogConsumer.java      # Batch @KafkaListener
+    ├── redis/
+    │   ├── RedisLogSubscriber.java    # MessageListener, one channel per logstream.topics entry
     │   └── LogEvent.java              # Record: serverName, path, topic, timestamp, message
     ├── filter/
     │   ├── LogFilterEngine.java       # Stateless filter — evaluates LogEvent vs ClientFilter
@@ -202,10 +203,10 @@ All config is externalized via environment variables with sensible dev defaults.
 | Env Var | Default | Description |
 |---|---|---|
 | `SERVER_PORT` | `8080` | Spring Boot internal port (jar / spring-boot:run) |
-| `KAFKA_BOOTSTRAP_SERVERS` | `172.27.12.202:9092` | Kafka broker address |
-| `KAFKA_CONSUMER_GROUP_ID` | `log-dashboard` | Kafka consumer group |
-| `KAFKA_MAX_POLL_RECORDS` | `500` | Max Kafka records per batch poll |
-| `LOGSTREAM_TOPICS` | `server-topic,system-topic,...` | Comma-separated topics to subscribe |
+| `REDIS_HOST` | `localhost` | Redis host |
+| `REDIS_PORT` | `6379` | Redis port |
+| `REDIS_PASSWORD` | — | Redis auth password (prod only, blank if unset) |
+| `LOGSTREAM_TOPICS` | `server-topic,system-topic,...` | Comma-separated Redis pub/sub channels to subscribe |
 | `LOGSTREAM_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed WebSocket and REST API origin |
 | `LOGSTREAM_MAX_SESSIONS_PER_USER` | `5` | Max concurrent WS sessions per JWT subject; `0` disables the cap |
 | `LOGSTREAM_REPLAY_BUFFER_SIZE` | `500` | Events kept per topic for replay on subscribe; `0` disables replay |
@@ -215,14 +216,14 @@ All config is externalized via environment variables with sensible dev defaults.
 
 ## Running Locally
 
-**Prerequisites:** Java 17, a running Kafka broker.
+**Prerequisites:** Java 17, a running Redis instance.
 
 ```bash
 # Dev profile (uses application-dev.yaml defaults)
 ./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
 
-# Dev with custom Kafka broker
-KAFKA_BOOTSTRAP_SERVERS=192.168.1.10:9092 ./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
+# Dev with custom Redis host
+REDIS_HOST=192.168.1.10 ./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 
 ## Building & Deploying
@@ -234,7 +235,7 @@ KAFKA_BOOTSTRAP_SERVERS=192.168.1.10:9092 ./mvnw spring-boot:run -Dspring-boot.r
 
 **Run in production:**
 ```bash
-KAFKA_BOOTSTRAP_SERVERS=prod-broker:9092 \
+REDIS_HOST=prod-redis \
 LOGSTREAM_TOPICS=server-topic,system-topic,app1-topic \
 LOGSTREAM_ALLOWED_ORIGINS=https://myapp.com \
 LOGSTREAM_LOG_DIR=/var/log/logstream \
@@ -252,6 +253,11 @@ Keycloak, using `log-infra/.env` as the deployment source of truth.
 
 Use this repository's `docker-compose.yml` and `.env.example` only when running
 the backend container independently for development or integration testing.
+
+This repo's compose stack bundles its own `redis:7-alpine` service for that
+standalone use — the `log-infra` stack does not, so if `log-infra` becomes the
+real deployment target, a Redis service needs to be added there too (or
+`REDIS_HOST` pointed at a shared instance) before switching that stack over.
 
 ## Tests
 

@@ -26,7 +26,7 @@ public class AsyncConfig {
         executor.setThreadNamePrefix("broadcast-");
         executor.setRejectedExecutionHandler((r, e) -> {
             // Under extreme load, drop the oldest queued task silently
-            // rather than blocking the Kafka consumer thread
+            // rather than blocking the Redis subscriber thread
             if (!e.isShutdown()) {
                 e.getQueue().poll();
                 e.execute(r);

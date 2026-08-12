@@ -3,7 +3,7 @@ package org.munycha.logstream.streaming.broadcast;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.munycha.logstream.streaming.filter.ClientFilter;
 import org.munycha.logstream.streaming.filter.LogFilterEngine;
-import org.munycha.logstream.streaming.kafka.LogEvent;
+import org.munycha.logstream.streaming.redis.LogEvent;
 import org.munycha.logstream.streaming.topic.TopicMetaStore;
 import org.munycha.logstream.streaming.websocket.WebSocketSessionRegistry;
 import org.slf4j.Logger;
@@ -22,7 +22,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Hot path: enqueues incoming Kafka events and flushes them to subscribed sessions
+ * Hot path: enqueues incoming log events and flushes them to subscribed sessions
  * every 100ms. Per-session filtering happens here; stats and backpressure are delegated.
  */
 @Service
@@ -64,8 +64,8 @@ public class LogBroadcastService {
     }
 
     /**
-     * Called from Kafka consumer — enqueues the event for batched broadcast.
-     * Non-blocking so it never stalls the Kafka consumer thread.
+     * Called from the Redis subscriber — enqueues the event for batched broadcast.
+     * Non-blocking so it never stalls the Redis subscriber thread.
      */
     public void broadcast(LogEvent event) {
         if (event == null || !event.isValid()) {

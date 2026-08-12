@@ -4,9 +4,11 @@ Guidance for Claude Code. For deep implementation details, see [ARCHITECTURE.md]
 
 ## Project Overview
 
-Logstream is a real-time log streaming server. Kafka → WebSocket. Also exposes REST endpoints for log file downloads and per-topic metadata. JWT-secured.
+Logstream is a real-time log streaming server. Redis pub/sub → WebSocket. Also exposes REST endpoints for log file downloads and per-topic metadata. JWT-secured.
 
-**Data flow:** Kafka → `KafkaLogConsumer` (batch poll) → `ConcurrentLinkedQueue` → `LogBroadcastService` (@Scheduled 100ms flush) → sessions grouped by (subscriptions, filter), one serialization per group → `SessionBackpressure` → WebSocket clients. In parallel: `StatsAccumulator` collects per-topic counters; `StatsBroadcaster` fans them out every 2s.
+**Data flow:** Redis pub/sub → `RedisLogSubscriber` (one channel per `logstream.topics` entry) → `ConcurrentLinkedQueue` → `LogBroadcastService` (@Scheduled 100ms flush) → sessions grouped by (subscriptions, filter), one serialization per group → `SessionBackpressure` → WebSocket clients. In parallel: `StatsAccumulator` collects per-topic counters; `StatsBroadcaster` fans them out every 2s.
+
+**Delivery semantics**: plain Redis pub/sub is fire-and-forget — no persistence, no consumer-group offsets. Events published while the app is down or the subscriber is briefly disconnected are lost with no broker-side redelivery. This is a deliberate, accepted tradeoff, not a bug. `ReplayBuffer` is unaffected — it's an in-memory, broker-agnostic ring buffer that only ever replays events the app already received live.
 
 ## Build & Run
 
@@ -21,19 +23,19 @@ docker compose up -d              # standalone backend container only
 
 ## Stack
 
-Java 17, Spring Boot 3.5.x, Maven 3.9.x (wrapper), Spring Security (OAuth2 resource server / JWT), Spring WebSocket (native `TextWebSocketHandler`, not STOMP), Spring Kafka (batch `JsonDeserializer`), Spring Boot Actuator (always on the classpath; `/actuator/health` exposed in all profiles, explicit exposure config only in prod).
+Java 17, Spring Boot 3.5.x, Maven 3.9.x (wrapper), Spring Security (OAuth2 resource server / JWT), Spring WebSocket (native `TextWebSocketHandler`, not STOMP), Spring Data Redis (Lettuce, pub/sub via `RedisMessageListenerContainer`), Spring Boot Actuator (always on the classpath; `/actuator/health` exposed in all profiles, explicit exposure config only in prod).
 
 ## Package Layout (feature-based)
 
 ```
 common/
-  config/         AsyncConfig, CorsConfig, LogstreamProperties
+  config/         AsyncConfig, CorsConfig, LogstreamProperties, RedisConfig
   exception/      GlobalExceptionHandler, ApiError,
                   LogFileNotFoundException, InvalidTopicException
 security/         SecurityConfig (JWT resource server),
                   JwtHandshakeInterceptor (WS bearer subprotocol validation)
 streaming/
-  kafka/          KafkaLogConsumer (batch @KafkaListener), LogEvent (record)
+  redis/          RedisLogSubscriber (MessageListener, per-topic channel), LogEvent (record)
   filter/         LogFilterEngine (stateless), ClientFilter (record + sanitize)
   broadcast/      LogBroadcastService     — enqueue + 100ms flush hot path
                   StatsAccumulator        — per-topic counters, atomic-swap drain
@@ -53,13 +55,13 @@ streaming/
 
 **Conventions**:
 - Package-by-feature, not by layer. Don't add top-level `controller/` `service/` `dto/`.
-- Data classes live next to their boundary (e.g. `LogEvent` in `kafka/`, not in a `model/` folder).
+- Data classes live next to their boundary (e.g. `LogEvent` in `redis/`, not in a `model/` folder).
 - `dto/` subpackage appears only when a feature has multiple transport shapes.
 - Cross-feature dependencies are explicit imports — keep them rare.
 
 ## Threading Model
 
-- **Kafka consumer thread** — only calls `incomingQueue.add()`; never blocks.
+- **Redis subscriber thread** (`RedisLogSubscriber.onMessage`, run by `RedisMessageListenerContainer`'s task executor) — only calls `incomingQueue.add()`; never blocks.
 - **`LogBroadcastService.flush`** (`@Scheduled`, 100ms) — drains queue, updates stats + meta, groups sessions by (subscriptions, filter), filters + serializes once per group, sends via `SessionBackpressure`.
 - **`StatsBroadcaster.flushStats`** (`@Scheduled`, 2s) — atomic-swap drain of `StatsAccumulator`, fans `StatsMessage` to all sessions.
 - **`SessionBackpressure.send`** — delegates to the `ConcurrentWebSocketSessionDecorator`-wrapped session (wrapped in `WebSocketSessionRegistry.add`); removes the session if the send throws.
@@ -69,7 +71,7 @@ streaming/
 
 ## Performance Rules (DO NOT REGRESS)
 
-- **Broadcast is batched**: `LogBroadcastService.broadcast()` MUST only enqueue. NEVER send directly from the Kafka thread.
+- **Broadcast is batched**: `LogBroadcastService.broadcast()` MUST only enqueue. NEVER send directly from the Redis subscriber thread.
 - **Flush interval**: 100ms — matched events as JSON array (2+) or single object (1).
 - **Group serialization**: sessions with identical (subscriptions, filter) share one matched list, one serialization, and the same `TextMessage` instance per chunk. NEVER reintroduce per-session serialization — with the UI auto-subscribing all clients to all topics, that multiplies flush cost by viewer count.
 - **Stats broadcast**: every 2s, independent of subscriptions, drained via atomic accumulator swap.
@@ -128,10 +130,10 @@ Default: `application.yaml`. Production: `application-prod.yaml` (requires all e
 
 | Variable | Dev Default | Description |
 |---|---|---|
-| `KAFKA_BOOTSTRAP_SERVERS` | `172.27.12.202:9092` | Kafka broker |
-| `KAFKA_CONSUMER_GROUP_ID` | `log-dashboard` | Consumer group |
-| `KAFKA_MAX_POLL_RECORDS` | `500` | Max records per batch poll |
-| `LOGSTREAM_TOPICS` | `server-topic,system-topic,...` | Comma-separated Kafka topics |
+| `REDIS_HOST` | `localhost` | Redis host |
+| `REDIS_PORT` | `6379` | Redis port |
+| `REDIS_PASSWORD` | — | Redis auth password (prod only, blank if unset) |
+| `LOGSTREAM_TOPICS` | `server-topic,system-topic,...` | Comma-separated Redis pub/sub channels |
 | `LOGSTREAM_ALLOWED_ORIGINS` | `http://localhost:5173` | WebSocket + REST CORS origins |
 | `LOGSTREAM_MAX_SESSIONS_PER_USER` | `5` | Max concurrent WS sessions per JWT subject; `0` disables. Over-cap connects are closed with 1008. |
 | `LOGSTREAM_REPLAY_BUFFER_SIZE` | `500` | Events kept per topic for replay to newly subscribed sessions; `0` disables. |
