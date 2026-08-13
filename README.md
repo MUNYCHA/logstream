@@ -1,24 +1,24 @@
 # Logstream
 
-A real-time log streaming bridge between **Redis pub/sub** and **WebSocket** clients, built with Spring Boot 3. Also exposes a REST API for log file downloads and per-topic metadata, secured with JWT bearer auth.
+A real-time log streaming bridge between **Redis pub/sub** and **WebSocket** clients, built with Spring Boot 3. Also exposes a REST API for log file downloads and per-channel metadata, secured with JWT bearer auth.
 
 ## How It Works
 
 ```
 Redis Channels  →  RedisLogSubscriber  →  LogBroadcastService (batched flush)  →  WebSocket Clients
                                        │
-                                       ├──→ StatsAccumulator (per-topic rate + servers)
+                                       ├──→ StatsAccumulator (per-channel rate + servers)
                                        │      └──→ StatsBroadcaster (every 2s) ──→ all sessions
                                        │
-                                       ├──→ ReplayBuffer (recent events per topic, replayed on subscribe)
+                                       ├──→ ReplayBuffer (recent events per channel, replayed on subscribe)
                                        │
-                                       └──→ TopicMetaStore (server/path snapshots, queried via REST)
+                                       └──→ ChannelMetaStore (server/path snapshots, queried via REST)
 ```
 
-1. Redis subscriber subscribes to one channel per configured topic and enqueues events (non-blocking). Delivery is fire-and-forget — no persistence or backlog, so events published while the app is down or briefly disconnected are lost (this is an accepted tradeoff of plain pub/sub).
-2. Every 100ms, the broadcast service flushes the queue. Sessions are grouped by identical (**topic subscriptions**, **filters** — server, path, text search, keywords, time range); each group's matched events are serialized once and sent as a single JSON object or a batched array.
-3. In parallel, accumulator updates per-topic rate counters and active-server sets. Every 2s a `stats` message is fanned out to every session.
-4. On connect, the client receives a one-shot `topics` greeting listing the configured topics. On subscribe, the last ~500 buffered events per newly subscribed topic are replayed so the panel isn't blank, then live events follow.
+1. Redis subscriber subscribes to one channel per configured channel name and enqueues events (non-blocking). Delivery is fire-and-forget — no persistence or backlog, so events published while the app is down or briefly disconnected are lost (this is an accepted tradeoff of plain pub/sub).
+2. Every 100ms, the broadcast service flushes the queue. Sessions are grouped by identical (**channel subscriptions**, **filters** — server, path, text search, keywords, time range); each group's matched events are serialized once and sent as a single JSON object or a batched array.
+3. In parallel, accumulator updates per-channel rate counters and active-server sets. Every 2s a `stats` message is fanned out to every session.
+4. On connect, the client receives a one-shot `channels` greeting listing the configured channels. On subscribe, the last ~500 buffered events per newly subscribed channel are replayed so the panel isn't blank, then live events follow.
 5. Slow or dead clients never stall the stream for others: each session is wrapped in a `ConcurrentWebSocketSessionDecorator`, so its messages buffer independently (up to 2 MB / 5 s) before the session is closed. The browser can simply reconnect.
 
 ## Authentication
@@ -38,19 +38,19 @@ The signing keys are fetched from `SSO_JWKS_URI`. `GET /actuator/health` is the 
 
 ### Server → Client
 
-**On connect — topic list:**
+**On connect — channel list:**
 ```json
-{ "type": "topics", "topics": ["server-topic", "system-topic", "app1-topic"] }
+{ "type": "channels", "channels": ["server-channel", "system-channel", "app1-channel"] }
 ```
 
-**On subscribe — replay:** the last ~500 buffered events per newly subscribed topic, sent immediately in the same single-object/array shapes as live events below. Replay is unfiltered (the UI filters client-side).
+**On subscribe — replay:** the last ~500 buffered events per newly subscribed channel, sent immediately in the same single-object/array shapes as live events below. Replay is unfiltered (the UI filters client-side).
 
 **Live log event (single):**
 ```json
 {
   "serverName": "web-01",
   "path": "/var/log/app.log",
-  "topic": "app1-topic",
+  "channel": "app1-channel",
   "timestamp": "2026-03-07T10:00:00Z",
   "message": "Started application in 1.2 seconds"
 }
@@ -59,8 +59,8 @@ The signing keys are fetched from `SSO_JWKS_URI`. `GET /actuator/health` is the 
 **Live log batch (2+ events in one frame, every ~100ms):**
 ```json
 [
-  { "serverName": "web-01", "path": "...", "topic": "...", "timestamp": "...", "message": "..." },
-  { "serverName": "web-02", "path": "...", "topic": "...", "timestamp": "...", "message": "..." }
+  { "serverName": "web-01", "path": "...", "channel": "...", "timestamp": "...", "message": "..." },
+  { "serverName": "web-02", "path": "...", "channel": "...", "timestamp": "...", "message": "..." }
 ]
 ```
 
@@ -68,8 +68,8 @@ The signing keys are fetched from `SSO_JWKS_URI`. `GET /actuator/health` is the 
 ```json
 {
   "type": "stats",
-  "topics": {
-    "app1-topic": { "rate": 142, "servers": ["web-01", "web-02"] }
+  "channels": {
+    "app1-channel": { "rate": 142, "servers": ["web-01", "web-02"] }
   },
   "intervalMs": 2000
 }
@@ -77,9 +77,9 @@ The signing keys are fetched from `SSO_JWKS_URI`. `GET /actuator/health` is the 
 
 ### Client → Server
 
-**Subscribe to topics** (required before any logs are sent):
+**Subscribe to channels** (required before any logs are sent):
 ```json
-{ "action": "subscribe", "topics": ["app1-topic", "app2-topic"] }
+{ "action": "subscribe", "channels": ["app1-channel", "app2-channel"] }
 ```
 
 **Set filters** (all fields optional):
@@ -110,8 +110,8 @@ The signing keys are fetched from `SSO_JWKS_URI`. `GET /actuator/health` is the 
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/logs/download?topic={topic}` | Streams `{topic}.log` from `LOGSTREAM_LOG_DIR` as `text/plain`. Path-security hardened: allowlist + lexical + symlink-resolved checks; the `Content-Disposition` filename is scrubbed (`[^a-zA-Z0-9._-]` → `_`). |
-| `GET` | `/api/topics/{topic}/meta` | Per-topic snapshot: each server + its paths with event counts and last-seen timestamp. 30s cache. |
+| `GET` | `/api/logs/download?channel={channel}` | Streams `{channel}.log` from `LOGSTREAM_LOG_DIR` as `text/plain`. Path-security hardened: allowlist + lexical + symlink-resolved checks; the `Content-Disposition` filename is scrubbed (`[^a-zA-Z0-9._-]` → `_`). |
+| `GET` | `/api/channels/{channel}/meta` | Per-channel snapshot: each server + its paths with event counts and last-seen timestamp. 30s cache. |
 | `GET` | `/actuator/health` | Health check (prod profile only, unauthenticated). |
 
 ### Error responses
@@ -151,11 +151,11 @@ src/main/java/org/munycha/logstream/
 │   │   ├── AsyncConfig.java           # @EnableAsync + @EnableScheduling, bounded ThreadPoolTaskExecutor
 │   │   ├── CorsConfig.java            # HTTP CORS for /api/**
 │   │   ├── LogstreamProperties.java   # @ConfigurationProperties("logstream")
-│   │   └── RedisConfig.java           # RedisMessageListenerContainer, per-topic channel subscription
+│   │   └── RedisConfig.java           # RedisMessageListenerContainer, per-channel subscription
 │   └── exception/
 │       ├── ApiError.java              # Uniform error response record
 │       ├── GlobalExceptionHandler.java  # @RestControllerAdvice
-│       ├── InvalidTopicException.java
+│       ├── InvalidChannelException.java
 │       └── LogFileNotFoundException.java
 │
 ├── security/
@@ -164,17 +164,17 @@ src/main/java/org/munycha/logstream/
 │
 └── streaming/
     ├── redis/
-    │   ├── RedisLogSubscriber.java    # MessageListener, one channel per logstream.topics entry
-    │   └── LogEvent.java              # Record: serverName, path, topic, timestamp, message
+    │   ├── RedisLogSubscriber.java    # MessageListener, one channel per logstream.channels entry
+    │   └── LogEvent.java              # Record: serverName, path, channel, timestamp, message
     ├── filter/
     │   ├── LogFilterEngine.java       # Stateless filter — evaluates LogEvent vs ClientFilter
     │   └── ClientFilter.java          # Immutable per-session filter record + sanitize()
     ├── broadcast/
     │   ├── LogBroadcastService.java   # Enqueue + @Scheduled(100ms) flush hot path
-    │   ├── StatsAccumulator.java      # Per-topic rate + active-server tracking
+    │   ├── StatsAccumulator.java      # Per-channel rate + active-server tracking
     │   ├── StatsBroadcaster.java      # @Scheduled(2s) stats emit
     │   ├── SessionBackpressure.java   # Send wrapper — evicts sessions whose send fails
-    │   └── ReplayBuffer.java          # Per-topic ring of recent events, replayed on subscribe
+    │   └── ReplayBuffer.java          # Per-channel ring of recent events, replayed on subscribe
     ├── websocket/
     │   ├── WebSocketConfig.java       # /ws/logs endpoint, container limits, handshake interceptor
     │   ├── LogWebSocketHandler.java   # Lifecycle + action dispatch (subscribe/filter/clear-filters/refresh)
@@ -183,17 +183,17 @@ src/main/java/org/munycha/logstream/
     │   └── dto/
     │       ├── WsClientMessage.java       # Sealed: Subscribe | Filter | ClearFilters | Refresh
     │       ├── ClientFilterRequest.java   # Raw inbound filter → sanitized ClientFilter
-    │       ├── TopicsListMessage.java     # Greeting payload
+    │       ├── ChannelsListMessage.java   # Greeting payload
     │       ├── StatsMessage.java          # Stats payload
-    │       └── TopicStat.java             # Per-topic stats entry
+    │       └── ChannelStat.java           # Per-channel stats entry
     ├── download/
     │   ├── LogDownloadController.java # GET /api/logs/download
     │   └── LogFileResolver.java       # Allowlist + lexical + symlink-resolved path checks
-    └── topic/
-        ├── LogTopicMetaController.java  # GET /api/topics/{topic}/meta
-        ├── TopicMetaStore.java          # In-memory: topic → server → path counts
+    └── channel/
+        ├── LogChannelMetaController.java  # GET /api/channels/{channel}/meta
+        ├── ChannelMetaStore.java          # In-memory: channel → server → path counts
         └── dto/
-            └── TopicMetaResponse.java   # Nested ServerEntry / PathEntry records
+            └── ChannelMetaResponse.java   # Nested ServerEntry / PathEntry records
 ```
 
 ## Configuration
@@ -206,12 +206,12 @@ All config is externalized via environment variables with sensible dev defaults.
 | `REDIS_HOST` | `localhost` | Redis host |
 | `REDIS_PORT` | `6379` | Redis port |
 | `REDIS_PASSWORD` | — | Redis auth password (prod only, blank if unset) |
-| `LOGSTREAM_TOPICS` | `server-topic,system-topic,...` | Comma-separated Redis pub/sub channels to subscribe |
+| `LOGSTREAM_CHANNELS` | `server-channel,system-channel,...` | Comma-separated Redis pub/sub channels to subscribe |
 | `LOGSTREAM_ALLOWED_ORIGINS` | `http://localhost:5173` | Allowed WebSocket and REST API origin |
 | `LOGSTREAM_MAX_SESSIONS_PER_USER` | `5` | Max concurrent WS sessions per JWT subject; `0` disables the cap |
-| `LOGSTREAM_REPLAY_BUFFER_SIZE` | `500` | Events kept per topic for replay on subscribe; `0` disables replay |
+| `LOGSTREAM_REPLAY_BUFFER_SIZE` | `500` | Events kept per channel for replay on subscribe; `0` disables replay |
 | `JVM_MAX_HEAP` | `512m` | JVM max heap size (Docker only) |
-| `LOGSTREAM_LOG_DIR` | — | Directory containing download files. Files must be named `{topic}.log`, with the topic included in `LOGSTREAM_TOPICS`. |
+| `LOGSTREAM_LOG_DIR` | — | Directory containing download files. Files must be named `{channel}.log`, with the channel included in `LOGSTREAM_CHANNELS`. |
 | `SSO_JWKS_URI` | — | JWKS endpoint for JWT validation (prod profile). |
 
 ## Running Locally
@@ -236,7 +236,7 @@ REDIS_HOST=192.168.1.10 ./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
 **Run in production:**
 ```bash
 REDIS_HOST=prod-redis \
-LOGSTREAM_TOPICS=server-topic,system-topic,app1-topic \
+LOGSTREAM_CHANNELS=server-channel,system-channel,app1-channel \
 LOGSTREAM_ALLOWED_ORIGINS=https://myapp.com \
 LOGSTREAM_LOG_DIR=/var/log/logstream \
 SSO_JWKS_URI=https://sso.example.com/.well-known/jwks.json \

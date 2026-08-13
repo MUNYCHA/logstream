@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.munycha.logstream.streaming.filter.ClientFilter;
 import org.munycha.logstream.streaming.filter.LogFilterEngine;
 import org.munycha.logstream.streaming.redis.LogEvent;
-import org.munycha.logstream.streaming.topic.TopicMetaStore;
+import org.munycha.logstream.streaming.channel.ChannelMetaStore;
 import org.munycha.logstream.streaming.websocket.WebSocketSessionRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,7 +39,7 @@ public class LogBroadcastService {
     private final WebSocketSessionRegistry sessionRegistry;
     private final ObjectMapper objectMapper;
     private final LogFilterEngine filterEngine;
-    private final TopicMetaStore metaStore;
+    private final ChannelMetaStore metaStore;
     private final StatsAccumulator statsAccumulator;
     private final SessionBackpressure sessionBackpressure;
     private final ReplayBuffer replayBuffer;
@@ -50,7 +50,7 @@ public class LogBroadcastService {
     public LogBroadcastService(WebSocketSessionRegistry sessionRegistry,
                                ObjectMapper objectMapper,
                                LogFilterEngine filterEngine,
-                               TopicMetaStore metaStore,
+                               ChannelMetaStore metaStore,
                                StatsAccumulator statsAccumulator,
                                SessionBackpressure sessionBackpressure,
                                ReplayBuffer replayBuffer) {
@@ -95,7 +95,7 @@ public class LogBroadcastService {
     /**
      * Flushes queued events every 100ms. Sessions are grouped by identical
      * (subscriptions, filter) so each group's events are matched and serialized
-     * exactly once — with the UI auto-subscribing every client to all topics,
+     * exactly once — with the UI auto-subscribing every client to all channels,
      * additional unfiltered viewers cost one extra send, not one extra serialization.
      */
     @Scheduled(fixedDelay = 100)
@@ -108,7 +108,7 @@ public class LogBroadcastService {
         }
         if (batch.isEmpty()) return;
 
-        // Stats, topic metadata and replay history are independent of subscriptions —
+        // Stats, channel metadata and replay history are independent of subscriptions —
         // record every event.
         for (LogEvent evt : batch) {
             statsAccumulator.record(evt);
@@ -119,13 +119,13 @@ public class LogBroadcastService {
         try {
             Map<DispatchKey, List<WebSocketSession>> groups = new HashMap<>();
             sessionRegistry.forEach(session -> {
-                Set<String> topics = sessionRegistry.getSubscriptions(session);
+                Set<String> channels = sessionRegistry.getSubscriptions(session);
                 // Require explicit subscription — no logs until client subscribes
-                if (topics == null || topics.isEmpty()) return;
+                if (channels == null || channels.isEmpty()) return;
                 ClientFilter filter = sessionRegistry.getFilter(session);
                 // Copy the live subscription set: the key must not mutate under a
                 // concurrent re-subscribe while it sits in the HashMap.
-                groups.computeIfAbsent(new DispatchKey(Set.copyOf(topics), filter), k -> new ArrayList<>())
+                groups.computeIfAbsent(new DispatchKey(Set.copyOf(channels), filter), k -> new ArrayList<>())
                         .add(session);
             });
             groups.forEach((key, sessions) -> dispatchToGroup(key, sessions, batch));
@@ -137,7 +137,7 @@ public class LogBroadcastService {
     private void dispatchToGroup(DispatchKey key, List<WebSocketSession> sessions, List<LogEvent> batch) {
         List<LogEvent> matched = new ArrayList<>();
         for (LogEvent evt : batch) {
-            if (!key.topics().contains(evt.topic())) continue;
+            if (!key.channels().contains(evt.channel())) continue;
             if (!filterEngine.matches(evt, key.filter())) continue;
             matched.add(evt);
         }
@@ -163,5 +163,5 @@ public class LogBroadcastService {
     }
 
     /** Sessions with equal subscriptions and filter share one serialized payload. */
-    private record DispatchKey(Set<String> topics, ClientFilter filter) {}
+    private record DispatchKey(Set<String> channels, ClientFilter filter) {}
 }

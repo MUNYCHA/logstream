@@ -22,7 +22,7 @@ public sealed interface WsClientMessage
         permits WsClientMessage.Subscribe, WsClientMessage.Filter, WsClientMessage.ClearFilters,
                 WsClientMessage.Refresh {
 
-    record Subscribe(List<String> topics) implements WsClientMessage {}
+    record Subscribe(List<String> channels) implements WsClientMessage {}
 
     record Filter(ClientFilterRequest filters) implements WsClientMessage {}
 

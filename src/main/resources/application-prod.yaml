@@ -17,7 +17,7 @@ spring:
           jwk-set-uri: ${SSO_JWKS_URI}
 
 logstream:
-  topics: ${LOGSTREAM_TOPICS}
+  channels: ${LOGSTREAM_CHANNELS}
   allowed-origins: ${LOGSTREAM_ALLOWED_ORIGINS}
   log-dir: ${LOGSTREAM_LOG_DIR}
   max-sessions-per-user: ${LOGSTREAM_MAX_SESSIONS_PER_USER:5}

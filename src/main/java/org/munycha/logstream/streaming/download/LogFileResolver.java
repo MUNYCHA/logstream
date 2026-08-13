@@ -1,7 +1,7 @@
 package org.munycha.logstream.streaming.download;
 
 import org.munycha.logstream.common.config.LogstreamProperties;
-import org.munycha.logstream.common.exception.InvalidTopicException;
+import org.munycha.logstream.common.exception.InvalidChannelException;
 import org.munycha.logstream.common.exception.LogFileNotFoundException;
 import org.springframework.stereotype.Component;
 
@@ -12,8 +12,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 
 /**
- * Resolves a topic name to its on-disk log file, layering:
- *  1. Allowlist — topic must be in configured topics (semantic guard)
+ * Resolves a channel name to its on-disk log file, layering:
+ *  1. Allowlist — channel must be in configured channels (semantic guard)
  *  2. Lexical containment — resolved path must start with the base dir
  *  3. Filesystem state — must exist and be a regular file
  *  4. Symlink boundary — real path (symlinks resolved) must still start with the real base
@@ -29,8 +29,8 @@ public class LogFileResolver {
         this.properties = properties;
     }
 
-    public Path resolve(String topic) {
-        if (properties.getTopics() == null || !properties.getTopics().contains(topic)) {
+    public Path resolve(String channel) {
+        if (properties.getChannels() == null || !properties.getChannels().contains(channel)) {
             throw new LogFileNotFoundException();
         }
 
@@ -43,13 +43,13 @@ public class LogFileResolver {
         Path resolved;
         try {
             base = Paths.get(logDir).toAbsolutePath().normalize();
-            resolved = base.resolve(topic + ".log").normalize();
+            resolved = base.resolve(channel + ".log").normalize();
         } catch (InvalidPathException e) {
-            throw new InvalidTopicException();
+            throw new InvalidChannelException();
         }
 
         if (!resolved.startsWith(base)) {
-            throw new InvalidTopicException();
+            throw new InvalidChannelException();
         }
 
         if (!Files.exists(resolved) || !Files.isRegularFile(resolved)) {

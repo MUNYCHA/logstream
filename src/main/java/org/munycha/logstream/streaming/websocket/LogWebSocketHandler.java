@@ -5,7 +5,7 @@ import org.munycha.logstream.common.config.LogstreamProperties;
 import org.munycha.logstream.streaming.broadcast.ReplayBuffer;
 import org.munycha.logstream.streaming.filter.ClientFilter;
 import org.munycha.logstream.streaming.redis.LogEvent;
-import org.munycha.logstream.streaming.websocket.dto.TopicsListMessage;
+import org.munycha.logstream.streaming.websocket.dto.ChannelsListMessage;
 import org.munycha.logstream.streaming.websocket.dto.WsClientMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -73,10 +73,10 @@ public class LogWebSocketHandler extends TextWebSocketHandler implements SubProt
         // Send the greeting through the decorated session so it can't collide
         // with a concurrent broadcast on the raw socket.
         try {
-            TopicsListMessage greeting = new TopicsListMessage(properties.getTopics());
+            ChannelsListMessage greeting = new ChannelsListMessage(properties.getChannels());
             managed.sendMessage(new TextMessage(objectMapper.writeValueAsString(greeting)));
         } catch (Exception e) {
-            log.error("Failed to send topic list to session {}", session.getId(), e);
+            log.error("Failed to send channel list to session {}", session.getId(), e);
         }
     }
 
@@ -99,31 +99,31 @@ public class LogWebSocketHandler extends TextWebSocketHandler implements SubProt
     }
 
     private void handleSubscribe(WebSocketSession session, WsClientMessage.Subscribe sub) {
-        if (sub.topics() == null) return;
-        Set<String> allowedTopics = new HashSet<>(properties.getTopics());
-        Set<String> topics = sub.topics().stream()
-                .filter(t -> t != null && !t.isBlank())
+        if (sub.channels() == null) return;
+        Set<String> allowedChannels = new HashSet<>(properties.getChannels());
+        Set<String> channels = sub.channels().stream()
+                .filter(c -> c != null && !c.isBlank())
                 .map(String::trim)
-                .filter(allowedTopics::contains)
+                .filter(allowedChannels::contains)
                 .collect(Collectors.toSet());
         // Subscribe before replaying so no live event is lost in between; the rare
         // event that gets both broadcast and replayed in that window is acceptable.
-        Set<String> previous = sessionRegistry.subscribe(session, topics);
-        log.info("Session {} subscribed to topics: {}", session.getId(), topics);
+        Set<String> previous = sessionRegistry.subscribe(session, channels);
+        log.info("Session {} subscribed to channels: {}", session.getId(), channels);
 
-        Set<String> newlySubscribed = new HashSet<>(topics);
+        Set<String> newlySubscribed = new HashSet<>(channels);
         newlySubscribed.removeAll(previous);
         sendReplay(session, newlySubscribed);
     }
 
     /**
-     * Sends buffered history for newly subscribed topics so the client sees recent
+     * Sends buffered history for newly subscribed channels so the client sees recent
      * logs immediately instead of a blank panel. Replay is unfiltered — the UI
      * filters client-side, and server-side filters usually arrive after subscribe.
      */
-    private void sendReplay(WebSocketSession session, Set<String> topics) {
-        if (topics.isEmpty()) return;
-        List<LogEvent> events = replayBuffer.replayFor(topics);
+    private void sendReplay(WebSocketSession session, Set<String> channels) {
+        if (channels.isEmpty()) return;
+        List<LogEvent> events = replayBuffer.replayFor(channels);
         if (events.isEmpty()) return;
         WebSocketSession managed = sessionRegistry.getManaged(session);
         if (managed == null) return;
@@ -136,8 +136,8 @@ public class LogWebSocketHandler extends TextWebSocketHandler implements SubProt
                         : objectMapper.writeValueAsString(chunk);
                 managed.sendMessage(new TextMessage(json));
             }
-            log.debug("Replayed {} buffered events to session {} for topics {}",
-                    events.size(), session.getId(), topics);
+            log.debug("Replayed {} buffered events to session {} for channels {}",
+                    events.size(), session.getId(), channels);
         } catch (Exception e) {
             log.warn("Failed to send replay to session {}: {}", session.getId(), e.getMessage());
         }

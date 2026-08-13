@@ -25,9 +25,10 @@ public class RedisConfig {
     }
 
     /**
-     * One channel per {@code logstream.topics} entry — mirrors the previous one-Kafka-topic-per-log-topic model.
-     * Subscription happens asynchronously with built-in backoff/recovery, so a broker that's unreachable at
-     * startup doesn't block application context refresh — it just retries in the background.
+     * One Redis channel per {@code logstream.channels} entry — mirrors the previous
+     * one-Kafka-topic-per-channel model. Subscription happens asynchronously with built-in
+     * backoff/recovery, so a broker that's unreachable at startup doesn't block application
+     * context refresh — it just retries in the background.
      */
     @Bean
     public RedisMessageListenerContainer redisMessageListenerContainer(
@@ -35,8 +36,8 @@ public class RedisConfig {
             RedisLogSubscriber redisLogSubscriber) {
         RedisMessageListenerContainer container = new RedisMessageListenerContainer();
         container.setConnectionFactory(connectionFactory);
-        for (String topic : logstreamProperties.getTopics()) {
-            container.addMessageListener(redisLogSubscriber, new ChannelTopic(topic));
+        for (String channel : logstreamProperties.getChannels()) {
+            container.addMessageListener(redisLogSubscriber, new ChannelTopic(channel));
         }
         return container;
     }

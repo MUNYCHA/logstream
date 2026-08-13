@@ -24,11 +24,11 @@ class LogFilterEngineTest {
     // -------------------------------------------------------------------------
 
     private static LogEvent event(String serverName, String path, String message) {
-        return new LogEvent(serverName, path, "test-topic", Instant.now().toString(), message);
+        return new LogEvent(serverName, path, "test-channel", Instant.now().toString(), message);
     }
 
     private static LogEvent eventWithTimestamp(String timestamp) {
-        return new LogEvent("web-01", "/app/app.log", "test-topic", timestamp, "some message");
+        return new LogEvent("web-01", "/app/app.log", "test-channel", timestamp, "some message");
     }
 
     private static ClientFilter serverFilter(String server) {
@@ -231,7 +231,7 @@ class LogFilterEngineTest {
     @Test
     void matches_unparsableTimestamp_letThrough() {
         // Bad timestamp → warn + return true (safe default)
-        LogEvent e = new LogEvent("web-01", "/app/app.log", "test-topic", "not-a-timestamp", "msg");
+        LogEvent e = new LogEvent("web-01", "/app/app.log", "test-channel", "not-a-timestamp", "msg");
         assertTrue(engine.matches(e, timeRangeFilter("1m")));
     }
 
@@ -242,7 +242,7 @@ class LogFilterEngineTest {
     @Test
     void matches_allFiltersMatch_returnsTrue() {
         String ts = Instant.now().minusSeconds(10).toString();
-        LogEvent e = new LogEvent("web-01", "/var/log/app.log", "test-topic", ts, "ERROR timeout");
+        LogEvent e = new LogEvent("web-01", "/var/log/app.log", "test-channel", ts, "ERROR timeout");
         ClientFilter f = ClientFilter.sanitize("web-01", "/var/log/app.log", "error", List.of("timeout"), "and", "1m", 0);
         assertTrue(engine.matches(e, f));
     }

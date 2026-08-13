@@ -34,18 +34,18 @@ class RedisLogSubscriberTest {
 
     @Test
     void deserializesValidJsonAndBroadcasts() {
-        String json = "{\"serverName\":\"web-01\",\"path\":\"/var/log/app.log\",\"topic\":\"app1-topic\","
+        String json = "{\"serverName\":\"web-01\",\"path\":\"/var/log/app.log\",\"channel\":\"app1-channel\","
                 + "\"timestamp\":\"2026-08-12T10:00:00Z\",\"message\":\"hello\"}";
 
-        subscriber.onMessage(message("app1-topic", json), null);
+        subscriber.onMessage(message("app1-channel", json), null);
 
-        LogEvent expected = new LogEvent("web-01", "/var/log/app.log", "app1-topic", "2026-08-12T10:00:00Z", "hello");
+        LogEvent expected = new LogEvent("web-01", "/var/log/app.log", "app1-channel", "2026-08-12T10:00:00Z", "hello");
         verify(broadcastService).broadcast(expected);
     }
 
     @Test
     void dropsMalformedBodyWithoutThrowingOrBroadcasting() {
-        subscriber.onMessage(message("app1-topic", "not json"), null);
+        subscriber.onMessage(message("app1-channel", "not json"), null);
 
         verify(broadcastService, never()).broadcast(any());
     }

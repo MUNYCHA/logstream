@@ -21,8 +21,8 @@ public class LogDownloadController {
     }
 
     @GetMapping("/download")
-    public void download(@RequestParam String topic, HttpServletResponse response) throws IOException {
-        Path file = resolver.resolve(topic);
+    public void download(@RequestParam String channel, HttpServletResponse response) throws IOException {
+        Path file = resolver.resolve(channel);
 
         // Defense-in-depth: scrub the filename used in Content-Disposition
         String safeName = file.getFileName().toString().replaceAll("[^a-zA-Z0-9._-]", "_");

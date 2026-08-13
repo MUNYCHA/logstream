@@ -9,22 +9,22 @@ import java.util.List;
 @ConfigurationProperties(prefix = "logstream")
 public class LogstreamProperties {
 
-    private List<String> topics;
+    private List<String> channels;
     private List<String> allowedOrigins;
     private String logDir;
 
     /** Max concurrent WebSocket sessions per authenticated user; values <= 0 disable the cap. */
     private int maxSessionsPerUser = 5;
 
-    /** Events kept per topic for replay to newly subscribed sessions; values <= 0 disable replay. */
+    /** Events kept per channel for replay to newly subscribed sessions; values <= 0 disable replay. */
     private int replayBufferSize = 500;
 
-    public List<String> getTopics() {
-        return topics;
+    public List<String> getChannels() {
+        return channels;
     }
 
-    public void setTopics(List<String> topics) {
-        this.topics = topics;
+    public void setChannels(List<String> channels) {
+        this.channels = channels;
     }
 
     public List<String> getAllowedOrigins() {

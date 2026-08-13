@@ -26,7 +26,7 @@ Thread: scheduling-1 (Spring @Scheduled — LogBroadcastService.flush)
   │  → for each event:
   │        statsAccumulator.record(evt)   ← stats accumulators
   │        metaStore.record(evt)          ← server/path snapshots
-  │        replayBuffer.record(evt)       ← per-topic history ring
+  │        replayBuffer.record(evt)       ← per-channel history ring
   │  → group sessions by DispatchKey(subscriptions copy, filter)
   │  → for each group:
   │        filter events against the group's subscriptions + ClientFilter
@@ -59,7 +59,7 @@ WebSocket Clients
 ### Key threading rules
 - **Redis subscriber thread**: Only enqueues; never blocks on WebSocket I/O.
 - **Two scheduled threads** (`flush` 100ms, `flushStats` 2s) both route sends through `SessionBackpressure`. Concurrency and slow-client isolation are handled by the `ConcurrentWebSocketSessionDecorator` each session is wrapped in at registration — a stuck client never blocks the schedulers.
-- **Tomcat WS threads**: Handle inbound client messages (subscribe/filter/clear-filters/refresh) in `LogWebSocketHandler` — parsed via Jackson into the sealed `WsClientMessage`. On subscribe they also read `ReplayBuffer` (per-topic synchronized ring; single writer = flush thread) and send history through the decorated session.
+- **Tomcat WS threads**: Handle inbound client messages (subscribe/filter/clear-filters/refresh) in `LogWebSocketHandler` — parsed via Jackson into the sealed `WsClientMessage`. On subscribe they also read `ReplayBuffer` (per-channel synchronized ring; single writer = flush thread) and send history through the decorated session.
 - **Sweeper thread** (`closeExpiredSessions` 60s): closes sessions whose stored JWT can't be proven valid — expired, no `exp`, or no token at all.
 - **Session registry**: All `ConcurrentHashMap` — safe for concurrent reads from flush threads + writes from WS threads.
 
@@ -70,12 +70,12 @@ The broadcast feature is split across five cooperating classes — each with one
 | Class | Role | Trigger |
 |---|---|---|
 | `LogBroadcastService` | Enqueue (called from the Redis subscriber thread) + 100ms flush. Groups sessions by identical (subscriptions, filter); each group's events are matched and serialized once. | `RedisLogSubscriber.onMessage` callback + `@Scheduled(fixedDelay = 100)` |
-| `StatsAccumulator` | Per-topic `LongAdder` counters + active-server `Set<String>`. Atomic swap on drain. | Called by `LogBroadcastService.flush` for every drained event |
+| `StatsAccumulator` | Per-channel `LongAdder` counters + active-server `Set<String>`. Atomic swap on drain. | Called by `LogBroadcastService.flush` for every drained event |
 | `StatsBroadcaster` | Drains the accumulator, builds a `StatsMessage`, fans out to every session. | `@Scheduled(fixedDelay = 2000)` |
 | `SessionBackpressure` | Sends to the decorator-wrapped session; evicts sessions whose send throws. Slow clients are buffered then closed by the decorator. | Called by both schedulers |
-| `ReplayBuffer` | Last N events per topic (global sequence for cross-topic ordering), replayed to newly subscribed sessions. `LOGSTREAM_REPLAY_BUFFER_SIZE` (default 500); `0` disables. | Written by `flush` for every drained event; read on subscribe |
+| `ReplayBuffer` | Last N events per channel (global sequence for cross-channel ordering), replayed to newly subscribed sessions. `LOGSTREAM_REPLAY_BUFFER_SIZE` (default 500); `0` disables. | Written by `flush` for every drained event; read on subscribe |
 
-`TopicMetaStore` (under `streaming/topic/`) is updated from the same `flush` loop — it holds per-server, per-path counters and last-seen timestamps queried by the REST meta endpoint.
+`ChannelMetaStore` (under `streaming/channel/`) is updated from the same `flush` loop — it holds per-server, per-path counters and last-seen timestamps queried by the REST meta endpoint.
 
 ## Message Lifecycle (End-to-End)
 
@@ -89,7 +89,7 @@ Redis broker
   → Group sessions by DispatchKey(Set.copyOf(subscriptions), filter)
       (sessions without subscriptions are skipped — no logs until subscribe)
   → For each group:
-      → Match events against the group's topics + ClientFilter (filterEngine.matches)
+      → Match events against the group's channels + ClientFilter (filterEngine.matches)
       → Serialize ONCE per ≤100-event chunk: 1 event → single JSON object, 2+ → JSON array
       → Share the immutable TextMessage across the group:
           sessionBackpressure.send(session, TextMessage) for each member
@@ -145,20 +145,20 @@ sealed interface WsClientMessage permits Subscribe, Filter, ClearFilters, Refres
 
 | Action | Handler | Side effect |
 |---|---|---|
-| `Subscribe(topics)` | `handleSubscribe` | Intersects requested topics with allowlist, calls `sessionRegistry.subscribe`, then replays `ReplayBuffer` history for newly subscribed topics (subscribe-before-replay, so no live event is lost; unfiltered, same frame shapes as live, ≤100 events per frame) |
+| `Subscribe(channels)` | `handleSubscribe` | Intersects requested channels with allowlist, calls `sessionRegistry.subscribe`, then replays `ReplayBuffer` history for newly subscribed channels (subscribe-before-replay, so no live event is lost; unfiltered, same frame shapes as live, ≤100 events per frame) |
 | `Filter(filters)` | `handleFilter` | Converts `ClientFilterRequest` → sanitized `ClientFilter`, calls `sessionRegistry.setFilter` |
 | `ClearFilters()` | `handleClearFilters` | `sessionRegistry.setFilter(session, ClientFilter.EMPTY)` |
 | `Refresh(token)` | `handleRefresh` | Decodes the renewed JWT, requires the handshake subject, replaces the session's `jwt` attribute |
 
 ### Connection lifecycle
-- `afterConnectionEstablished`: register via `sessionRegistry.add(session, subject)` (the subject comes from the handshake attributes). The registry returns the decorator-wrapped session, or `null` when the subject is at the per-user cap — then the connection is closed with `1008 Session limit reached`. On success, send the `TopicsListMessage` greeting (`{"type":"topics","topics":[...]}`) through the wrapped session.
+- `afterConnectionEstablished`: register via `sessionRegistry.add(session, subject)` (the subject comes from the handshake attributes). The registry returns the decorator-wrapped session, or `null` when the subject is at the per-user cap — then the connection is closed with `1008 Session limit reached`. On success, send the `ChannelsListMessage` greeting (`{"type":"channels","channels":[...]}`) through the wrapped session.
 - `afterConnectionClosed`: `sessionRegistry.remove(session)`.
 
 ## Session Registry (`WebSocketSessionRegistry`)
 
 ```java
 Map<String, WebSocketSession> sessions      // sessionId → decorator-wrapped session
-Map<String, Set<String>> subscriptions      // sessionId → topic set
+Map<String, Set<String>> subscriptions      // sessionId → channel set
 Map<String, ClientFilter> filters           // sessionId → filter (absent = EMPTY)
 Map<String, Set<String>> subjectSessions    // subject → live session ids (per-user cap)
 Map<String, String> sessionSubjects         // sessionId → subject (for cleanup)
@@ -168,8 +168,8 @@ Map<String, String> sessionSubjects         // sessionId → subject (for cleanu
 |---|---|---|
 | `add(session, subject)` | Cap claim inside a single `compute` + map put | Atomically reserves a per-subject slot (`logstream.max-sessions-per-user`; `0` disables), wraps in `ConcurrentWebSocketSessionDecorator` (5s/2MB limits), returns the wrapped session — or `null` when the cap is hit (caller closes). Tomcat WS thread |
 | `remove(session)` | Map removes by id | Accepts raw or wrapped instance; releases the subject slot. WS thread or backpressure (on send failure) |
-| `subscribe(session, topics)` | Atomic replace | Replaces all subscriptions; returns the previous set so the handler can replay only newly added topics |
-| `isSubscribed(session, topic)` | Map get + set contains | Hot path in flush |
+| `subscribe(session, channels)` | Atomic replace | Replaces all subscriptions; returns the previous set so the handler can replay only newly added channels |
+| `isSubscribed(session, channel)` | Map get + set contains | Hot path in flush |
 | `setFilter(session, filter)` | Map put (or remove if empty) | Hot path on filter messages |
 | `getFilter(session)` | Map getOrDefault(EMPTY) | Hot path in flush |
 | `forEach(consumer)` | Streams wrapped sessions, filters by `isOpen()` | Used by flush + stats |
@@ -204,20 +204,20 @@ All REST errors flow through `GlobalExceptionHandler` (`@RestControllerAdvice`) 
 | Exception | Status | Code |
 |---|---|---|
 | `LogFileNotFoundException` | 404 | `LOG_FILE_NOT_FOUND` |
-| `InvalidTopicException` | 400 | `INVALID_TOPIC` |
+| `InvalidChannelException` | 400 | `INVALID_CHANNEL` |
 
-Topic-not-in-allowlist and file-missing-on-disk both raise `LogFileNotFoundException` — same 404, same message — so attackers can't distinguish the two via response.
+Channel-not-in-allowlist and file-missing-on-disk both raise `LogFileNotFoundException` — same 404, same message — so attackers can't distinguish the two via response.
 
 ## Log File Resolver (`LogFileResolver`)
 
 Four ordered checks before serving a file:
 
-1. **Allowlist** — `topic ∈ properties.getTopics()` (semantic guard; closes path traversal at the input level)
-2. **Lexical containment** — `base.resolve(topic + ".log").normalize()` must `startsWith(base)`
+1. **Allowlist** — `channel ∈ properties.getChannels()` (semantic guard; closes path traversal at the input level)
+2. **Lexical containment** — `base.resolve(channel + ".log").normalize()` must `startsWith(base)`
 3. **File state** — `Files.exists` + `Files.isRegularFile` (rejects directories, devices, FIFOs)
 4. **Symlink boundary** — `toRealPath()` re-resolved against `base.toRealPath()` (catches symlinks pointing outside the base dir)
 
-Any failure → `LogFileNotFoundException` (or `InvalidTopicException` for malformed input). The controller is just headers + `Files.copy`, and scrubs the `Content-Disposition` filename (`[^a-zA-Z0-9._-]` → `_`) as defense-in-depth.
+Any failure → `LogFileNotFoundException` (or `InvalidChannelException` for malformed input). The controller is just headers + `Files.copy`, and scrubs the `Content-Disposition` filename (`[^a-zA-Z0-9._-]` → `_`) as defense-in-depth.
 
 ## Configuration
 
@@ -234,7 +234,7 @@ Any failure → `LogFileNotFoundException` (or `InvalidTopicException` for malfo
 | Setting | Value | Purpose |
 |---|---|---|
 | Connection factory | Auto-configured Lettuce `RedisConnectionFactory` from `spring.data.redis.{host,port,password}` | No manual factory bean — relies on Boot auto-config |
-| Channel subscription | One `ChannelTopic` per `logstream.topics` entry, registered on `RedisMessageListenerContainer` | Mirrors the old one-Kafka-topic-per-log-topic model |
+| Channel subscription | One `ChannelTopic` per `logstream.channels` entry, registered on `RedisMessageListenerContainer` | Mirrors the old one-Kafka-topic-per-channel model |
 | Serializer | `Jackson2JsonRedisSerializer<LogEvent>` | Deserializes published JSON into `LogEvent` |
 | `logstream.redis.listener-auto-startup` | `true` (default) | Toggle to disable the listener container in tests |
 
@@ -244,7 +244,7 @@ Any failure → `LogFileNotFoundException` (or `InvalidTopicException` for malfo
 | Setting | Default | Purpose |
 |---|---|---|
 | `logstream.max-sessions-per-user` | 5 | Per-JWT-subject WS session cap; `0` disables. Over-cap → `1008 Session limit reached` |
-| `logstream.replay-buffer-size` | 500 | Events kept per topic for replay on subscribe; `0` disables replay |
+| `logstream.replay-buffer-size` | 500 | Events kept per channel for replay on subscribe; `0` disables replay |
 
 ### Thread pool (`AsyncConfig`)
 | Setting | Value |
@@ -258,7 +258,7 @@ Any failure → `LogFileNotFoundException` (or `InvalidTopicException` for malfo
 
 ### `LogEvent` (record, `streaming/redis`)
 ```java
-record LogEvent(String serverName, String path, String topic, String timestamp, String message)
+record LogEvent(String serverName, String path, String channel, String timestamp, String message)
 // isValid() — all fields non-blank except message which may be empty but not null
 ```
 
@@ -275,15 +275,15 @@ record ClientFilter(String server, String path, String search,
 
 ```
 Server → Client:
-  Greeting:     { "type": "topics", "topics": [...] }                   (once on connect)
+  Greeting:     { "type": "channels", "channels": [...] }                 (once on connect)
   Replay:       same shapes as Single/Batched — buffered history for newly
-                subscribed topics, sent right after subscribe; unfiltered
-  Single event: { "serverName", "path", "topic", "timestamp", "message" }
-  Batched:      [ { ... }, { ... }, ... ]                                (every ~100ms)
-  Stats:        { "type": "stats", "topics": { topic: { rate, servers } }, "intervalMs": 2000 }
+                subscribed channels, sent right after subscribe; unfiltered
+  Single event: { "serverName", "path", "channel", "timestamp", "message" }
+  Batched:      [ { ... }, { ... }, ... ]                                 (every ~100ms)
+  Stats:        { "type": "stats", "channels": { channel: { rate, servers } }, "intervalMs": 2000 }
 
 Client → Server:
-  Subscribe:    { "action": "subscribe", "topics": [...] }
+  Subscribe:    { "action": "subscribe", "channels": [...] }
   Filter:       { "action": "filter", "filters": { server, path, search,
                                                    keywords: { terms, mode },
                                                    timeRange, timeRangeMs } }
@@ -296,11 +296,11 @@ Client → Server:
 
 | Method | Path | Response | Errors |
 |---|---|---|---|
-| `GET` | `/api/logs/download?topic={topic}` | `text/plain` stream of `{topic}.log` | 404 if topic unknown / file missing; 400 if topic malformed |
-| `GET` | `/api/topics/{topic}/meta` | `TopicMetaResponse` (cache 30s) | 400 if topic blank or unknown |
+| `GET` | `/api/logs/download?channel={channel}` | `text/plain` stream of `{channel}.log` | 404 if channel unknown / file missing; 400 if channel malformed |
+| `GET` | `/api/channels/{channel}/meta` | `ChannelMetaResponse` (cache 30s) | 400 if channel blank or unknown |
 | `GET` | `/actuator/health` | Health JSON (prod only) | — |
 
-### `TopicMetaResponse` shape
+### `ChannelMetaResponse` shape
 ```json
 {
   "servers": [
@@ -327,11 +327,11 @@ src/main/java/org/munycha/logstream/
 │   │   ├── AsyncConfig.java                # ThreadPoolTaskExecutor (4-8 threads, 10k queue)
 │   │   ├── CorsConfig.java                 # HTTP CORS for /api/**
 │   │   ├── LogstreamProperties.java        # @ConfigurationProperties("logstream")
-│   │   └── RedisConfig.java                # RedisMessageListenerContainer, per-topic channel subscription
+│   │   └── RedisConfig.java                # RedisMessageListenerContainer, per-channel subscription
 │   └── exception/
 │       ├── ApiError.java                   # Uniform error response record
 │       ├── GlobalExceptionHandler.java     # @RestControllerAdvice
-│       ├── InvalidTopicException.java
+│       ├── InvalidChannelException.java
 │       └── LogFileNotFoundException.java
 │
 ├── security/
@@ -340,7 +340,7 @@ src/main/java/org/munycha/logstream/
 │
 └── streaming/
     ├── redis/
-    │   ├── RedisLogSubscriber.java         # MessageListener, one channel per logstream.topics entry
+    │   ├── RedisLogSubscriber.java         # MessageListener, one channel per logstream.channels entry
     │   └── LogEvent.java
     │
     ├── filter/
@@ -349,10 +349,10 @@ src/main/java/org/munycha/logstream/
     │
     ├── broadcast/
     │   ├── LogBroadcastService.java        # Enqueue + 100ms flush (group serialization)
-    │   ├── StatsAccumulator.java           # Per-topic counters, atomic-swap drain
+    │   ├── StatsAccumulator.java           # Per-channel counters, atomic-swap drain
     │   ├── StatsBroadcaster.java           # @Scheduled(2s) stats emit
     │   ├── SessionBackpressure.java        # Send wrapper; evicts sessions on send failure
-    │   └── ReplayBuffer.java               # Per-topic ring of recent events, replayed on subscribe
+    │   └── ReplayBuffer.java               # Per-channel ring of recent events, replayed on subscribe
     │
     ├── websocket/
     │   ├── WebSocketConfig.java            # /ws/logs registration, container limits
@@ -362,22 +362,22 @@ src/main/java/org/munycha/logstream/
     │   └── dto/
     │       ├── WsClientMessage.java            # Sealed: Subscribe | Filter | ClearFilters | Refresh
     │       ├── ClientFilterRequest.java        # Raw inbound filter → sanitized
-    │       ├── TopicsListMessage.java          # Greeting payload
+    │       ├── ChannelsListMessage.java        # Greeting payload
     │       ├── StatsMessage.java               # Stats payload
-    │       └── TopicStat.java
+    │       └── ChannelStat.java
     │
     ├── download/
     │   ├── LogDownloadController.java      # GET /api/logs/download
     │   └── LogFileResolver.java            # 4-layer path security
     │
-    └── topic/
-        ├── LogTopicMetaController.java     # GET /api/topics/{topic}/meta
-        ├── TopicMetaStore.java             # In-memory server/path counters
+    └── channel/
+        ├── LogChannelMetaController.java   # GET /api/channels/{channel}/meta
+        ├── ChannelMetaStore.java           # In-memory server/path counters
         └── dto/
-            └── TopicMetaResponse.java      # Nested ServerEntry / PathEntry
+            └── ChannelMetaResponse.java    # Nested ServerEntry / PathEntry
 
 src/main/resources/
 ├── application.yaml                        # Base: app name, lifecycle
-├── application-dev.yaml                    # Dev: local Redis host, topics, CORS
+├── application-dev.yaml                    # Dev: local Redis host, channels, CORS
 └── application-prod.yaml                   # Prod: all values from env vars + SSO_JWKS_URI + actuator
 ```

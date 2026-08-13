@@ -11,7 +11,7 @@ spring:
       port: ${REDIS_PORT:6379}
 
 logstream:
-  topics: server-topic,system-topic,app1-topic,app2-topic,app3-topic,app4-topic
+  channels: server-channel,system-channel,app1-channel,app2-channel,app3-channel,app4-channel
   allowed-origins: http://localhost:5173
   log-dir: # set to local log directory if testing file download
   max-sessions-per-user: 5

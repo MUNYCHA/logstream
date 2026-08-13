@@ -45,7 +45,7 @@ class LogDownloadControllerTest {
 
     @BeforeEach
     void setUp() {
-        when(properties.getTopics()).thenReturn(List.of("server-topic", "system-topic"));
+        when(properties.getChannels()).thenReturn(List.of("server-channel", "system-channel"));
         when(properties.getAllowedOrigins()).thenReturn(List.of("http://localhost:5173"));
         when(properties.getLogDir()).thenReturn(logDir.toString());
     }
@@ -55,32 +55,32 @@ class LogDownloadControllerTest {
     // -------------------------------------------------------------------------
 
     @Test
-    void download_validTopicAndFile_returns200() throws Exception {
-        Files.writeString(logDir.resolve("server-topic.log"), "line1\nline2\n");
+    void download_validChannelAndFile_returns200() throws Exception {
+        Files.writeString(logDir.resolve("server-channel.log"), "line1\nline2\n");
 
-        mockMvc.perform(get("/api/logs/download").param("topic", "server-topic"))
+        mockMvc.perform(get("/api/logs/download").param("channel", "server-channel"))
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_PLAIN))
                 .andExpect(header().string("Content-Disposition",
-                        "attachment; filename=\"server-topic.log\""))
+                        "attachment; filename=\"server-channel.log\""))
                 .andExpect(content().string("line1\nline2\n"));
     }
 
     @Test
-    void download_validTopicAndFile_contentLengthMatchesFileSize() throws Exception {
-        Path file = logDir.resolve("system-topic.log");
+    void download_validChannelAndFile_contentLengthMatchesFileSize() throws Exception {
+        Path file = logDir.resolve("system-channel.log");
         Files.writeString(file, "hello world");
 
-        mockMvc.perform(get("/api/logs/download").param("topic", "system-topic"))
+        mockMvc.perform(get("/api/logs/download").param("channel", "system-channel"))
                 .andExpect(status().isOk())
                 .andExpect(header().longValue("Content-Length", Files.size(file)));
     }
 
     @Test
     void download_emptyFile_returns200WithEmptyBody() throws Exception {
-        Files.createFile(logDir.resolve("server-topic.log"));
+        Files.createFile(logDir.resolve("server-channel.log"));
 
-        mockMvc.perform(get("/api/logs/download").param("topic", "server-topic"))
+        mockMvc.perform(get("/api/logs/download").param("channel", "server-channel"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(""));
     }
@@ -90,27 +90,27 @@ class LogDownloadControllerTest {
     // -------------------------------------------------------------------------
 
     @Test
-    void download_topicNotInAllowlist_returns404() throws Exception {
-        mockMvc.perform(get("/api/logs/download").param("topic", "unknown-topic"))
+    void download_channelNotInAllowlist_returns404() throws Exception {
+        mockMvc.perform(get("/api/logs/download").param("channel", "unknown-channel"))
                 .andExpect(status().isNotFound());
     }
 
     @Test
-    void download_emptyTopic_returns404() throws Exception {
-        mockMvc.perform(get("/api/logs/download").param("topic", ""))
+    void download_emptyChannel_returns404() throws Exception {
+        mockMvc.perform(get("/api/logs/download").param("channel", ""))
                 .andExpect(status().isNotFound());
     }
 
     @Test
-    void download_nullTopicsList_returns404() throws Exception {
-        when(properties.getTopics()).thenReturn(null);
+    void download_nullChannelsList_returns404() throws Exception {
+        when(properties.getChannels()).thenReturn(null);
 
-        mockMvc.perform(get("/api/logs/download").param("topic", "server-topic"))
+        mockMvc.perform(get("/api/logs/download").param("channel", "server-channel"))
                 .andExpect(status().isNotFound());
     }
 
     @Test
-    void download_missingTopicParam_returns400() throws Exception {
+    void download_missingChannelParam_returns400() throws Exception {
         // Spring rejects missing required @RequestParam before the controller runs
         mockMvc.perform(get("/api/logs/download"))
                 .andExpect(status().isBadRequest());
@@ -124,7 +124,7 @@ class LogDownloadControllerTest {
     void download_logDirNull_returns404() throws Exception {
         when(properties.getLogDir()).thenReturn(null);
 
-        mockMvc.perform(get("/api/logs/download").param("topic", "server-topic"))
+        mockMvc.perform(get("/api/logs/download").param("channel", "server-channel"))
                 .andExpect(status().isNotFound());
     }
 
@@ -132,7 +132,7 @@ class LogDownloadControllerTest {
     void download_logDirBlank_returns404() throws Exception {
         when(properties.getLogDir()).thenReturn("   ");
 
-        mockMvc.perform(get("/api/logs/download").param("topic", "server-topic"))
+        mockMvc.perform(get("/api/logs/download").param("channel", "server-channel"))
                 .andExpect(status().isNotFound());
     }
 
@@ -142,38 +142,38 @@ class LogDownloadControllerTest {
 
     @Test
     void download_traversalDotDotForwardSlash_returns404() throws Exception {
-        mockMvc.perform(get("/api/logs/download").param("topic", "../secret"))
+        mockMvc.perform(get("/api/logs/download").param("channel", "../secret"))
                 .andExpect(status().isNotFound());
     }
 
     @Test
     void download_traversalDotDotBackslash_returns404() throws Exception {
-        mockMvc.perform(get("/api/logs/download").param("topic", "..\\secret"))
+        mockMvc.perform(get("/api/logs/download").param("channel", "..\\secret"))
                 .andExpect(status().isNotFound());
     }
 
     @Test
     void download_traversalAbsolutePath_returns404() throws Exception {
-        mockMvc.perform(get("/api/logs/download").param("topic", "/etc/passwd"))
+        mockMvc.perform(get("/api/logs/download").param("channel", "/etc/passwd"))
                 .andExpect(status().isNotFound());
     }
 
     @Test
     void download_traversalMultipleSegments_returns404() throws Exception {
-        mockMvc.perform(get("/api/logs/download").param("topic", "../../etc/shadow"))
+        mockMvc.perform(get("/api/logs/download").param("channel", "../../etc/shadow"))
                 .andExpect(status().isNotFound());
     }
 
     @Test
     void download_traversalUrlEncodedSlash_returns404() throws Exception {
         // Spring decodes %2F before the controller receives the parameter
-        mockMvc.perform(get("/api/logs/download?topic=..%2Fsecret"))
+        mockMvc.perform(get("/api/logs/download?channel=..%2Fsecret"))
                 .andExpect(status().isNotFound());
     }
 
     @Test
     void download_traversalDoubleEncoded_returns404() throws Exception {
-        mockMvc.perform(get("/api/logs/download?topic=..%252Fsecret"))
+        mockMvc.perform(get("/api/logs/download?channel=..%252Fsecret"))
                 .andExpect(status().isNotFound());
     }
 
@@ -182,18 +182,18 @@ class LogDownloadControllerTest {
     // -------------------------------------------------------------------------
 
     @Test
-    void download_validTopicFileMissing_returns404() throws Exception {
-        // File not created — valid topic but no .log file on disk
-        mockMvc.perform(get("/api/logs/download").param("topic", "server-topic"))
+    void download_validChannelFileMissing_returns404() throws Exception {
+        // File not created — valid channel but no .log file on disk
+        mockMvc.perform(get("/api/logs/download").param("channel", "server-channel"))
                 .andExpect(status().isNotFound());
     }
 
     @Test
-    void download_validTopicPathIsDirectory_returns404() throws Exception {
-        // server-topic.log exists but is a directory, not a regular file
-        Files.createDirectory(logDir.resolve("server-topic.log"));
+    void download_validChannelPathIsDirectory_returns404() throws Exception {
+        // server-channel.log exists but is a directory, not a regular file
+        Files.createDirectory(logDir.resolve("server-channel.log"));
 
-        mockMvc.perform(get("/api/logs/download").param("topic", "server-topic"))
+        mockMvc.perform(get("/api/logs/download").param("channel", "server-channel"))
                 .andExpect(status().isNotFound());
     }
 
@@ -209,10 +209,10 @@ class LogDownloadControllerTest {
         Files.writeString(secretFile, "sensitive data");
 
         try {
-            Path link = logDir.resolve("server-topic.log");
+            Path link = logDir.resolve("server-channel.log");
             Files.createSymbolicLink(link, secretFile);
 
-            mockMvc.perform(get("/api/logs/download").param("topic", "server-topic"))
+            mockMvc.perform(get("/api/logs/download").param("channel", "server-channel"))
                     .andExpect(status().isNotFound());
         } finally {
             Files.deleteIfExists(secretFile);
@@ -225,10 +225,10 @@ class LogDownloadControllerTest {
         Path outsideDir = Files.createTempDirectory("outside");
 
         try {
-            Path link = logDir.resolve("server-topic.log");
+            Path link = logDir.resolve("server-channel.log");
             Files.createSymbolicLink(link, outsideDir);
 
-            mockMvc.perform(get("/api/logs/download").param("topic", "server-topic"))
+            mockMvc.perform(get("/api/logs/download").param("channel", "server-channel"))
                     .andExpect(status().isNotFound());
         } finally {
             Files.deleteIfExists(outsideDir);
@@ -241,7 +241,7 @@ class LogDownloadControllerTest {
 
     @Test
     void download_404Response_doesNotLeakServerPath() throws Exception {
-        MvcResult result = mockMvc.perform(get("/api/logs/download").param("topic", "unknown-topic"))
+        MvcResult result = mockMvc.perform(get("/api/logs/download").param("channel", "unknown-channel"))
                 .andExpect(status().isNotFound())
                 .andReturn();
 
@@ -252,12 +252,12 @@ class LogDownloadControllerTest {
 
     @Test
     void download_404Response_doesNotLeakFilename() throws Exception {
-        MvcResult result = mockMvc.perform(get("/api/logs/download").param("topic", "unknown-topic"))
+        MvcResult result = mockMvc.perform(get("/api/logs/download").param("channel", "unknown-channel"))
                 .andExpect(status().isNotFound())
                 .andReturn();
 
         String body = result.getResponse().getContentAsString();
-        assertFalse(body.contains("unknown-topic"),
-                "404 response body must not echo back the topic name");
+        assertFalse(body.contains("unknown-channel"),
+                "404 response body must not echo back the channel name");
     }
 }

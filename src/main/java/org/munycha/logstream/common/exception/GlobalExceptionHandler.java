@@ -16,9 +16,9 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.NOT_FOUND, "LOG_FILE_NOT_FOUND", ex.getMessage(), request);
     }
 
-    @ExceptionHandler(InvalidTopicException.class)
-    public ResponseEntity<ApiError> handleInvalidTopic(InvalidTopicException ex, HttpServletRequest request) {
-        return build(HttpStatus.BAD_REQUEST, "INVALID_TOPIC", ex.getMessage(), request);
+    @ExceptionHandler(InvalidChannelException.class)
+    public ResponseEntity<ApiError> handleInvalidChannel(InvalidChannelException ex, HttpServletRequest request) {
+        return build(HttpStatus.BAD_REQUEST, "INVALID_CHANNEL", ex.getMessage(), request);
     }
 
     private ResponseEntity<ApiError> build(HttpStatus status, String code, String message, HttpServletRequest request) {

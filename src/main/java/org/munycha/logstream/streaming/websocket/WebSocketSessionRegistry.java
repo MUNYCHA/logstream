@@ -88,10 +88,10 @@ public class WebSocketSessionRegistry {
     }
 
     /** Replaces the session's subscriptions; returns the previous set (empty if none). */
-    public Set<String> subscribe(WebSocketSession session, Set<String> topics) {
-        Set<String> topicSet = ConcurrentHashMap.newKeySet();
-        topicSet.addAll(topics);
-        Set<String> previous = subscriptions.put(session.getId(), topicSet);
+    public Set<String> subscribe(WebSocketSession session, Set<String> channels) {
+        Set<String> channelSet = ConcurrentHashMap.newKeySet();
+        channelSet.addAll(channels);
+        Set<String> previous = subscriptions.put(session.getId(), channelSet);
         return previous == null ? Set.of() : previous;
     }
 
@@ -100,13 +100,13 @@ public class WebSocketSessionRegistry {
         return sessions.get(session.getId());
     }
 
-    public boolean isSubscribed(WebSocketSession session, String topic) {
-        Set<String> topics = subscriptions.get(session.getId());
-        return topics != null && topics.contains(topic);
+    public boolean isSubscribed(WebSocketSession session, String channel) {
+        Set<String> channels = subscriptions.get(session.getId());
+        return channels != null && channels.contains(channel);
     }
 
     /**
-     * The session's subscribed topics, or {@code null} when it has never subscribed.
+     * The session's subscribed channels, or {@code null} when it has never subscribed.
      * The returned set is the live concurrent set — callers that key on it must copy.
      */
     public Set<String> getSubscriptions(WebSocketSession session) {

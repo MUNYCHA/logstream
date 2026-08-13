@@ -1,9 +1,9 @@
-package org.munycha.logstream.streaming.topic.dto;
+package org.munycha.logstream.streaming.channel.dto;
 
 import java.util.List;
 
-/** REST response for {@code GET /api/topics/{topic}/meta}. */
-public record TopicMetaResponse(List<ServerEntry> servers) {
+/** REST response for {@code GET /api/channels/{channel}/meta}. */
+public record ChannelMetaResponse(List<ServerEntry> servers) {
 
     public record ServerEntry(String name, long count, String lastSeen, List<PathEntry> paths) {}
 

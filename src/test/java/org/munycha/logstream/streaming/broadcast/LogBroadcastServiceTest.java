@@ -8,7 +8,7 @@ import org.munycha.logstream.common.config.LogstreamProperties;
 import org.munycha.logstream.streaming.filter.ClientFilter;
 import org.munycha.logstream.streaming.filter.LogFilterEngine;
 import org.munycha.logstream.streaming.redis.LogEvent;
-import org.munycha.logstream.streaming.topic.TopicMetaStore;
+import org.munycha.logstream.streaming.channel.ChannelMetaStore;
 import org.munycha.logstream.streaming.websocket.WebSocketSessionRegistry;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
@@ -45,7 +45,7 @@ class LogBroadcastServiceTest {
                 registry,
                 new ObjectMapper(),
                 new LogFilterEngine(),
-                mock(TopicMetaStore.class),
+                mock(ChannelMetaStore.class),
                 new StatsAccumulator(),
                 backpressure,
                 new ReplayBuffer(properties));
@@ -58,8 +58,8 @@ class LogBroadcastServiceTest {
         return session;
     }
 
-    private LogEvent event(String topic, String server, String message) {
-        return new LogEvent(server, "/var/log/app.log", topic, "2026-06-11T08:00:00Z", message);
+    private LogEvent event(String channel, String server, String message) {
+        return new LogEvent(server, "/var/log/app.log", channel, "2026-06-11T08:00:00Z", message);
     }
 
     /** Captures every (session, message) pair sent during flush, keyed by session id. */
@@ -130,7 +130,7 @@ class LogBroadcastServiceTest {
     }
 
     @Test
-    void subscriptionToOtherTopicsReceivesNothing() {
+    void subscriptionToOtherChannelsReceivesNothing() {
         WebSocketSession other = mockSession("other");
         registry.add(other, "alice");
         registry.subscribe(other, Set.of("t2"));

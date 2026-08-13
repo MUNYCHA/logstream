@@ -18,8 +18,8 @@ class ReplayBufferTest {
         return new ReplayBuffer(properties);
     }
 
-    private LogEvent event(String topic, String message) {
-        return new LogEvent("srv-a", "/var/log/app.log", topic, "2026-06-11T08:00:00Z", message);
+    private LogEvent event(String channel, String message) {
+        return new LogEvent("srv-a", "/var/log/app.log", channel, "2026-06-11T08:00:00Z", message);
     }
 
     @Test
@@ -47,7 +47,7 @@ class ReplayBufferTest {
     }
 
     @Test
-    void multipleTopicsMergeInTrueArrivalOrder() {
+    void multipleChannelsMergeInTrueArrivalOrder() {
         ReplayBuffer buffer = buffer(10);
         buffer.record(event("t1", "a1"));
         buffer.record(event("t2", "b1"));
@@ -59,7 +59,7 @@ class ReplayBufferTest {
     }
 
     @Test
-    void replayIsScopedToRequestedTopics() {
+    void replayIsScopedToRequestedChannels() {
         ReplayBuffer buffer = buffer(10);
         buffer.record(event("t1", "keep"));
         buffer.record(event("t2", "skip"));
@@ -69,7 +69,7 @@ class ReplayBufferTest {
     }
 
     @Test
-    void unknownTopicReplaysNothing() {
+    void unknownChannelReplaysNothing() {
         ReplayBuffer buffer = buffer(10);
         buffer.record(event("t1", "hello"));
         assertTrue(buffer.replayFor(Set.of("t9")).isEmpty());

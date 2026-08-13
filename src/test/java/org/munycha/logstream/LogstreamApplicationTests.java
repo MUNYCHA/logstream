@@ -6,7 +6,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 @SpringBootTest(
 		webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = {
-				"logstream.topics=test-topic",
+				"logstream.channels=test-channel",
 				"logstream.allowed-origins=http://localhost",
 				// NimbusJwtDecoder fetches JWKS lazily — a placeholder URI lets the context bootstrap
 				"spring.security.oauth2.resourceserver.jwt.jwk-set-uri=http://localhost/jwks"

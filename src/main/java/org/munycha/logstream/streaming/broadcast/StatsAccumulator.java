@@ -10,7 +10,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
- * Per-topic counters + active-server tracking for periodic stats broadcasting.
+ * Per-channel counters + active-server tracking for periodic stats broadcasting.
  * The flush thread calls {@link #record}; the stats broadcaster calls {@link #drain}
  * to atomically swap the accumulators for the next interval.
  */
@@ -24,10 +24,10 @@ public class StatsAccumulator {
 
     public void record(LogEvent event) {
         counters.get()
-                .computeIfAbsent(event.topic(), k -> new LongAdder())
+                .computeIfAbsent(event.channel(), k -> new LongAdder())
                 .increment();
         servers.get()
-                .computeIfAbsent(event.topic(), k -> ConcurrentHashMap.newKeySet())
+                .computeIfAbsent(event.channel(), k -> ConcurrentHashMap.newKeySet())
                 .add(event.serverName());
     }
 

@@ -12,17 +12,17 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Keeps the last N events per topic so a freshly subscribed session sees recent
- * history instead of a blank panel. Memory is bounded: capacity × topics events,
+ * Keeps the last N events per channel so a freshly subscribed session sees recent
+ * history instead of a blank panel. Memory is bounded: capacity × channels events,
  * oldest overwritten first. The flush thread writes; Tomcat WS threads read on
- * subscribe — both rare and cheap enough that a per-topic synchronized ring is fine.
+ * subscribe — both rare and cheap enough that a per-channel synchronized ring is fine.
  */
 @Component
 public class ReplayBuffer {
 
     private final int capacity;
     private final AtomicLong sequence = new AtomicLong();
-    private final ConcurrentHashMap<String, TopicRing> rings = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ChannelRing> rings = new ConcurrentHashMap<>();
 
     public ReplayBuffer(LogstreamProperties properties) {
         this.capacity = properties.getReplayBufferSize();
@@ -30,16 +30,16 @@ public class ReplayBuffer {
 
     public void record(LogEvent event) {
         if (capacity <= 0) return;
-        rings.computeIfAbsent(event.topic(), k -> new TopicRing(capacity))
+        rings.computeIfAbsent(event.channel(), k -> new ChannelRing(capacity))
                 .add(new Entry(sequence.incrementAndGet(), event));
     }
 
-    /** Buffered events for the given topics, merged in arrival order (oldest first). */
-    public List<LogEvent> replayFor(Set<String> topics) {
-        if (capacity <= 0 || topics.isEmpty()) return List.of();
+    /** Buffered events for the given channels, merged in arrival order (oldest first). */
+    public List<LogEvent> replayFor(Set<String> channels) {
+        if (capacity <= 0 || channels.isEmpty()) return List.of();
         List<Entry> entries = new ArrayList<>();
-        for (String topic : topics) {
-            TopicRing ring = rings.get(topic);
+        for (String channel : channels) {
+            ChannelRing ring = rings.get(channel);
             if (ring != null) {
                 entries.addAll(ring.snapshot());
             }
@@ -48,15 +48,15 @@ public class ReplayBuffer {
         return entries.stream().map(Entry::event).toList();
     }
 
-    /** Global arrival sequence so multi-topic replays interleave in true order. */
+    /** Global arrival sequence so multi-channel replays interleave in true order. */
     private record Entry(long seq, LogEvent event) {}
 
-    private static final class TopicRing {
+    private static final class ChannelRing {
         private final Entry[] buffer;
         private int next;
         private int size;
 
-        TopicRing(int capacity) {
+        ChannelRing(int capacity) {
             this.buffer = new Entry[capacity];
         }
 

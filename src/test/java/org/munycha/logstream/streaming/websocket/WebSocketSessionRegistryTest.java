@@ -68,7 +68,7 @@ class WebSocketSessionRegistryTest {
     }
 
     @Test
-    void subscribeReturnsPreviousTopics() {
+    void subscribeReturnsPreviousChannels() {
         WebSocketSession session = mockSession("s1");
         registry.add(session, "alice");
         assertEquals(Set.of(), registry.subscribe(session, Set.of("t1", "t2")));
